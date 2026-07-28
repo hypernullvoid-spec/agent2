@@ -70,7 +70,9 @@ def run(
         guardrail_policy=GuardrailPolicy(),
     )
     result = agent.run(task)
-    typer.echo(f"\nOutcome: {result['outcome']}  (session {result['session_id'][:8]})")
+    from agent import ui
+    ui.console.print()
+    ui.outcome(result["outcome"], result["session_id"], result.get("summary"))
     raise typer.Exit(code=0 if result["outcome"] == "complete" else 1)
 
 
@@ -90,7 +92,9 @@ def team(
         guardrail_policy=GuardrailPolicy(),
     )
     result = orchestrator.run(task)
-    typer.echo("\n" + result["report_markdown"])
+    from agent import ui
+    ui.console.print()
+    ui.markdown(result["report_markdown"])
     raise typer.Exit(code=0 if result["final_outcome"] == "complete" else 1)
 
 

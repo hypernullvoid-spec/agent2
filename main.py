@@ -51,6 +51,7 @@ import shutil
 
 from dotenv import load_dotenv
 
+from agent                 import ui
 from agent.agent_loop      import AgentLoop
 from agent.sandbox         import close_sandbox
 from agent.self_correction import SelfCorrectionPolicy
@@ -75,28 +76,29 @@ def main():
     # ENDPOINT — CHANGE HERE" banner, or SWARN_DEPLOYED_* env vars).
     # No provider API key is required.
     from agent.llm import DEPLOYED_BASE_URL, DEPLOYED_MODEL_NAME
-    print(f"[agent] LLM: {DEPLOYED_MODEL_NAME} @ {DEPLOYED_BASE_URL}")
 
     # Ensure Docker sandbox is stopped cleanly on any exit
     atexit.register(close_sandbox)
 
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║   Swarn Agent  —  Phases 1–16                                ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print("║  file I/O · sandbox · repo-RAG · self-correction              ║")
-    print("║  structured memory · session recall                            ║")
-    print("║  data ingestion+validation · feature engineering · ML training ║")
-    print("║  evaluation+visualization · deployment automation              ║")
-    print("║  multi-agent orchestration (type 'team <task>' to use it)      ║")
-    print("║  multi-modal RAG · LLM fine-tuning · guardrails+observability   ║")
-    print("║  CLI ('swarn' command) + web dashboard ('swarn serve')             ║")
-    print(f"║  Workspace: {os.path.relpath(WORKSPACE_DIR):<52}║")
-    print("╚══════════════════════════════════════════════════════════════╝")
+    ui.banner(
+        "Swarn Agent — Phases 1–16",
+        [
+            "file I/O · sandbox · repo-RAG · self-correction",
+            "structured memory · session recall",
+            "data ingestion+validation · feature engineering · ML training",
+            "evaluation+visualization · deployment automation",
+            "multi-agent orchestration (type 'team <task>' to use it)",
+            "multi-modal RAG · LLM fine-tuning · guardrails+observability",
+            "CLI ('swarn' command) + web dashboard ('swarn serve')",
+            "",
+            f"LLM: {DEPLOYED_MODEL_NAME} @ {DEPLOYED_BASE_URL}",
+            f"Workspace: {os.path.relpath(WORKSPACE_DIR)}",
+        ],
+        footer="Type a task, or 'exit' to quit.",
+    )
 
     # Show session history if there are past runs
     _show_recent_sessions(n=3)
-
-    print("Type a task, or 'exit' to quit.\n")
 
     # Phase 4: correction policy (max 3 consecutive errors before abort)
     policy = SelfCorrectionPolicy(max_consecutive=3)

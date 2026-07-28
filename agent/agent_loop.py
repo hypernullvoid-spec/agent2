@@ -43,9 +43,9 @@ identical to Phase 1. agent_loop.py is the one file that deliberately
 evolves as new phases add to it.
 """
 
-import json
 import os
 
+from agent            import ui
 from agent.llm            import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
 from agent.llm_client     import LLMClient
 from agent.tools          import get_tool_definitions, run_tool
@@ -164,20 +164,18 @@ class AgentLoop:
         Orchestrator for multi-role use — can branch on the result
         without reaching into Session internals or parsing stdout.
         """
-        tag = f"[{self.role_name}] " if self.role_name else ""
-
         session  = self._store.new_session(task=task, model=self.model)
         messages = [{"role": "user", "content": task}]
         doom     = DoomLoopDetector()
 
-        print(f"\n{tag}[session {session.id[:8]}] {task[:70]}")
+        ui.session_header(session.id, task, role=self.role_name)
 
         for step_num in range(1, MAX_ITERATIONS + 1):
 
             # ── V3: context compaction ──────────────────────────────
             n_compacted = compact_messages(messages)
             if n_compacted:
-                print(f"{tag}[context] compacted {n_compacted} old tool result(s)")
+                ui.info(f"context: compacted {n_compacted} old tool result(s)")
 
             # ── LLM call ────────────────────────────────────────────
             current_tools = get_tool_definitions(self._tool_names)
@@ -199,7 +197,7 @@ class AgentLoop:
             for block in response.content:
                 if block.type == "text" and block.text.strip():
                     text = block.text.strip()
-                    print(f"\n{tag}[agent] {text}")
+                    ui.agent_text(text, role=self.role_name)
                     session.add_step(StepKind.PLAN, step=step_num, text=text)
 
             messages.append({"role": "assistant", "content": response.content})
@@ -218,8 +216,7 @@ class AgentLoop:
             abort        = False
 
             for block in tool_use_blocks:
-                inp_preview = json.dumps(block.input, ensure_ascii=False)
-                print(f"\n{tag}[→ tool] {block.name}  {inp_preview[:140]}")
+                ui.tool_call(block.name, block.input, role=self.role_name)
 
                 # Log call BEFORE running — so we have a record even if
                 # execution hangs or the process is killed mid-task
@@ -259,12 +256,12 @@ class AgentLoop:
                             error_kind = self._policy.last_error_kind(),
                             attempt    = self._policy.consecutive_errors,
                         )
-                        indicator = (
-                            f"[⚠ correction "
-                            f"{self._policy.consecutive_errors}/"
-                            f"{self._policy.max_consecutive}]"
+                        ui.warn(
+                            "correction",
+                            f"error in '{block.name}' — attempt "
+                            f"{self._policy.consecutive_errors}/{self._policy.max_consecutive}, "
+                            "hint sent back to the model",
                         )
-                        print(indicator)
 
                     if self._policy.should_abort():
                         abort = True
@@ -273,7 +270,7 @@ class AgentLoop:
                 if self._guardrails:
                     flagged, final_result = self._guardrails.scan_tool_result(block.name, final_result)
                     if flagged:
-                        print(f"{tag}[⚠ guardrail] possible prompt injection in '{block.name}' result")
+                        ui.warn("guardrail", f"possible prompt injection in '{block.name}' result — flagged for the model")
 
                 # ── V3: doom-loop detection ──────────────────────────
                 # Signature = (tool, canonicalized args, result hash) —
@@ -283,7 +280,7 @@ class AgentLoop:
                 # where the loop lives.
                 if doom.record(block.name, block.input, raw_result):
                     final_result = str(final_result) + DOOM_WARNING
-                    print(f"{tag}[⚠ doom-loop] repetition guard triggered on '{block.name}'")
+                    ui.warn("doom-loop", f"repetition guard triggered on '{block.name}'")
 
                 # ── Phase 5: log the result ──────────────────────────
                 # Store the *raw* result (not the enriched one) so the
@@ -297,10 +294,7 @@ class AgentLoop:
                 )
 
                 # Display (truncated for terminal readability)
-                preview = final_result[:400]
-                if len(final_result) > 400:
-                    preview += f"\n… ({len(final_result) - 400} more chars)"
-                print(f"{tag}[← result]\n{preview}")
+                ui.tool_result(final_result)
 
                 # Send the enriched result to the model so it sees the hints
                 tool_results.append({
@@ -321,9 +315,9 @@ class AgentLoop:
             messages.append({"role": "user", "content": tool_results})
 
             if abort:
-                print(
-                    f"\n{tag}[agent] ⛔ Stopped — {self._policy.max_consecutive} "
-                    "consecutive errors with no successful step between them."
+                ui.error(
+                    f"Stopped — {self._policy.max_consecutive} consecutive "
+                    "errors with no successful step between them."
                 )
                 session.outcome = "max_corrections"
                 session.add_step(
@@ -340,7 +334,7 @@ class AgentLoop:
                 return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
 
         # ── iteration cap ────────────────────────────────────────────────
-        print(f"\n{tag}[agent] Stopped after {MAX_ITERATIONS} iterations without finishing.")
+        ui.error(f"Stopped after {MAX_ITERATIONS} iterations without finishing.")
         session.outcome = "max_iterations"
         session.add_step(StepKind.ERROR, reason="max_iterations_reached")
         self._store.close_session(session)
