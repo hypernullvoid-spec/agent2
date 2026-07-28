@@ -1,0 +1,119 @@
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── Virtual environments ────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Environment / secrets ───────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Testing / coverage ──────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+
+# ── Type checkers / linters ─────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ── Agent runtime artifacts ─────────────────────────────────────────
+# runs/ = per-run journals, sessions/ = memory.py SESSIONS_DIR,
+# workspace/ = tool sandbox output (plots/, finetune/, deployments/),
+# knowledge/ = KnowledgeStore playbook.md + runs.db
+/runs/
+/sessions/
+/sandbox/
+/workspace/
+/knowledge/
+agent/knowledge/
+
+# ── Databases ───────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── ML models / vector store ────────────────────────────────────────
+.chroma/
+chroma/
+*.chroma
+/models/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.joblib
+*.safetensors
+*.ckpt
+checkpoints/
+.cache/huggingface/
+.cache/torch/
+
+# ── Jupyter ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── IDE / editor ────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Office lock files (docs/*.docx, *.pptx are tracked) ─────────────
+~$*.docx
+~$*.pptx
+~$*.xlsx
+
+# ── Logs / temp ─────────────────────────────────────────────────────
+*.log
+logs/
+*.tmp
+sync-test.txt
+
+# ── Claude Code (keep shared settings, drop local overrides) ────────
+.claude/settings.local.json
+.claude/memory/
+CLAUDE.local.md
