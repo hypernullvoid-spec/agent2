@@ -54,6 +54,7 @@ agent_loop.py's own MAX_ITERATIONS guard at the single-agent level.
 from dataclasses import dataclass, field
 from typing import Optional
 
+from agent import ui
 from agent.agent_loop import AgentLoop
 from agent.llm import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
 from agent.roles import get_role_config
@@ -195,7 +196,7 @@ class Orchestrator:
         """
         state = BlackboardState(original_task=task)
 
-        print(f"\n{'═' * 70}\n  ORCHESTRATOR — starting pipeline for:\n  {task[:200]}\n{'═' * 70}")
+        ui.section("team pipeline — Planner → Coder → Reviewer → Tester", subtitle=task)
 
         # ── 1. Planner ───────────────────────────────────────────────
         plan_run = self._run_role("planner", task, state)
@@ -228,8 +229,8 @@ class Orchestrator:
                 state.revisions += 1
                 if state.revisions >= MAX_REVISION_CYCLES:
                     return self._finish(state, "max_revisions_reached")
-                print(f"\n[orchestrator] Reviewer requested changes — sending back to Coder "
-                      f"(revision {state.revisions}/{MAX_REVISION_CYCLES})")
+                ui.warn("revision", "Reviewer requested changes — sending back to Coder "
+                        f"({state.revisions}/{MAX_REVISION_CYCLES})")
                 coder_task = (
                     f"Original task: {task}\n\n"
                     f"Your previous summary:\n{coder_run.summary}\n\n"
@@ -258,8 +259,8 @@ class Orchestrator:
             state.revisions += 1
             if state.revisions >= MAX_REVISION_CYCLES:
                 return self._finish(state, "max_revisions_reached")
-            print(f"\n[orchestrator] Tester reported failure — sending back to Coder "
-                  f"(revision {state.revisions}/{MAX_REVISION_CYCLES})")
+            ui.warn("revision", "Tester reported failure — sending back to Coder "
+                    f"({state.revisions}/{MAX_REVISION_CYCLES})")
             coder_task = (
                 f"Original task: {task}\n\n"
                 f"Your previous summary:\n{coder_run.summary}\n\n"
@@ -272,7 +273,8 @@ class Orchestrator:
 
     def _finish(self, state: BlackboardState, final_outcome: str) -> dict:
         report = self._render_report(state, final_outcome)
-        print(f"\n{'═' * 70}\n  ORCHESTRATOR — finished: {final_outcome}\n{'═' * 70}")
+        ui.section(f"team pipeline — finished: {final_outcome}",
+                   style="green" if final_outcome == "complete" else "red")
         return {
             "final_outcome":  final_outcome,
             "state":          state,
