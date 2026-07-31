@@ -44,8 +44,8 @@ class SearchResult:
     def solution_path(self) -> str:
         return os.path.join(self.run_dir, "best_solution.py")
 
-
-def _prepare_run(cfg: SearchConfig, data_dir: Optional[str]) -> tuple[str, str, str]:
+#for creating and runningn the directory,assigning Unique id and data staging
+def _prepare_run(cfg: SearchConfig, data_dir: Optional[str]) -> tuple[str, str, str]:    
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     run_dir = os.path.join(cfg.runs_dir, run_id)
     workspace = os.path.join(run_dir, "workspace")
