@@ -118,3 +118,8 @@ sync-test.txt
 .claude/memory/
 CLAUDE.local.md
 .~lock.*#
+
+# data-analyst: generated parquet store (keep the small test fixture only)
+data-analyst/store/*.parquet
+!data-analyst/store/test_data.parquet
+data-analyst/uploads/
