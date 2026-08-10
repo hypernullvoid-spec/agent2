@@ -117,3 +117,4 @@ sync-test.txt
 .claude/settings.local.json
 .claude/memory/
 CLAUDE.local.md
+.~lock.*#
