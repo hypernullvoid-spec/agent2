@@ -39,11 +39,11 @@ class SearchConfig:
     feedback_temperature: float = 0.2
 
     # environment
-    runs_dir: str = field(default_factory=lambda: os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "runs")))
+    runs_dir: str = field(default_factory=lambda: __import__(
+        "agent.paths", fromlist=["RUNS_DIR"]).RUNS_DIR)
     copy_data: bool = True               # copy data_dir into the run workspace as ./input
 
-    # cross-run knowledge (agent/knowledge.py)
+    # cross-run knowledge (agent/memory/knowledge.py)
     use_knowledge: bool = True           # inject playbook + similar past runs into prompts
     reflect: bool = False                # post-run reflection call -> playbook lessons
     knowledge_dir: Optional[str] = None  # default: <repo>/knowledge

@@ -18,14 +18,13 @@ from agent.llm.base import BaseLLMClient, LLMResponse, TextBlock, ToolUseBlock, 
 
 
 class OpenAICompatClient(BaseLLMClient):
-    def __init__(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, model: str, api_key: str = None, base_url: str = None):
         super().__init__(model)
         from openai import OpenAI  # lazy import — only needed for this backend
         self.client = OpenAI(
             api_key=api_key or os.environ.get("OPENAI_API_KEY") or "not-needed",  # local servers ignore it
             base_url=base_url,
         )
-
     # ── translation: Anthropic style → OpenAI style ────────────────────
 
     @staticmethod

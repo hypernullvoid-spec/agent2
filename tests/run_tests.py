@@ -18,6 +18,7 @@ MODULES = [
     "test_static_check",
     "test_knowledge",
     "test_doom_loop",
+    "test_cli_modes",
     "test_e2e_search",
     "test_parallel_resume",
 ]

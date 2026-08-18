@@ -30,17 +30,21 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from dotenv import find_dotenv, load_dotenv
+
 from agent.llm.base import BaseLLMClient
+
+# Populate os.environ from the project .env (real environment wins).
+load_dotenv(find_dotenv(usecwd=True))
 
 # ── deployed model configuration (single source of truth) ────────────────
 # TODO(production): replace these test-deployment defaults with the
 # production deployed model endpoint (see banner above).
-DEPLOYED_MODEL_NAME = os.environ.get("SWARN_DEPLOYED_MODEL", "qwen3.5-9b")
+DEPLOYED_MODEL_NAME = os.environ.get("SWARN_DEPLOYED_MODEL")
 DEPLOYED_BASE_URL = os.environ.get(
-    "SWARN_DEPLOYED_BASE_URL",
-    "https://hypernullvoid5869-55--qwen35-9b-serve.modal.run/v1",  # TEST: Qwen on Modal
+    "SWARN_DEPLOYED_BASE_URL"
 )
-DEPLOYED_API_KEY = os.environ.get("SWARN_DEPLOYED_API_KEY", "dummy")
+DEPLOYED_API_KEY = os.environ.get("SWARN_DEPLOYED_API_KEY")
 
 # Kept as the canonical default-model string other modules import for
 # display/logging defaults (journal, dashboard, CLI help).

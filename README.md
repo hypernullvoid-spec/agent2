@@ -75,6 +75,59 @@ Env vars added in V3: `SWARN_SEARCH_WORKERS`, `SWARN_KNOWLEDGE_DIR`,
 
 ---
 
+## Two modes: interactive and headless
+
+```bash
+swarn                                  # interactive — a conversation
+swarn "train a model on workspace/churn.csv"   # headless — one shot, then exit
+swarn run "..."                        # the same headless run, stated explicitly
+swarn team "..."                       # headless through the multi-agent pipeline
+```
+
+|                | Interactive                                  | Headless                                  |
+|----------------|----------------------------------------------|-------------------------------------------|
+| Invocation     | `swarn` with no prompt                       | `swarn "prompt"` (or `swarn run "…"`)     |
+| Tool approval  | prompts before anything side-effecting       | auto-approves — it has to be scriptable   |
+| Memory         | history carries across turns                 | one shot, no carry-over                   |
+| Output         | streamed, typewriter-style                   | structured panels; streaming off          |
+| Exit           | `/quit`                                      | exit code 0 on success, 1 otherwise       |
+
+A bare prompt works because `main()` rewrites `argv`: the first positional
+argument that isn't a known subcommand becomes `run <prompt>`.
+
+### Flags
+
+```bash
+swarn --model <id> "..."          # model for this invocation
+swarn --max-iterations 300 "..."  # cap on agentic loop iterations
+swarn --no-stream "..."           # no typewriter output (also automatic when piped)
+swarn --sandbox-tools "..."       # run tools in a Docker sandbox, not the local filesystem
+```
+
+### Interactive commands
+
+`/help` `/new` `/undo` `/compact` `/clear` `/plan` `/status` `/quit`,
+`/model [id]`, `/effort [low|medium|high]`, `/yolo` (toggle auto-approve),
+`/resume [session id]`, `/share-traces [public|private]`, plus
+`history [n]`, `recall <id>`, `index <path>`, `team <task>`, `report`,
+`guardrails`.
+
+Settings that should outlive a session — model, effort, yolo, tool runtime,
+trace visibility — persist in `~/.config/swarn/cli_agent_config.json`. Inspect
+it with `swarn config`. Command-line flags override the file for that
+invocation without rewriting it.
+
+### Approval
+
+Interactive mode gates every side-effecting tool (`write_file`, `run_shell`,
+`run_python`, `install_package`, training, packaging, indexing, …) behind a
+`y/n/a` prompt; read-only tools run unprompted. The list lives in
+`agent/core/approval_policy.py`. Answering `a` — or `/yolo` — auto-approves the
+rest of the session. A refusal is handed back to the model as a normal tool
+result, so it can try another approach instead of the run dying.
+
+---
+
 ## Why tree search is the headline feature
 
 HeyNeo's benchmark claim is #1 on MLE-bench (34.2%). What wins that benchmark is
@@ -111,7 +164,7 @@ task ──────►│  draft ── run ── review   ├────�
 
 ```bash
 swarn solve "Predict survival. Metric: accuracy." --data ./titanic --steps 20
-swarn solve "Forecast demand, minimize RMSE." -d ./data -s 30 -t 3600 -m openai:gpt-4o
+swarn solve "Forecast demand, minimize RMSE." -d ./data -s 30 -t 3600
 ```
 
 Or let the ReAct agent decide — it has a `solve_ml_task` tool and its
@@ -199,30 +252,64 @@ cp .env.example .env                            # optional: SWARN_DEPLOYED_* ove
 swarn solve --help
 ```
 
-## What changed vs. phases 1–16 (file map)
+## Layout
+
+Everything lives under `agent/`, grouped by capability. There is no
+root-level `main.py`: the CLI is `agent/cli.py`, reached via the installed
+`swarn` command or `python -m agent.cli`.
 
 ```
 agent/
-  llm/                    NEW  LLM layer (hard-routed to the deployed endpoint)
-    base.py                    normalized blocks/response, retries, usage tracking
-    anthropic_client.py        REMOVED (tombstone stub — BYO-LLM stripped)
-    openai_client.py           OpenAI-compat client for the deployed endpoint
-    router.py                  deployed endpoint config ("CHANGE HERE" for production)
-    mock_client.py             scripted client for offline tests
-  search/                 NEW  the MLE-bench engine
+  cli.py                  interactive REPL + headless one-shot (the entry point)
+  config.py               persisted CLI settings (~/.config/swarn/…)
+  paths.py                PROJECT_ROOT and the workspace/runs/sessions dirs
+
+  core/                   the agent itself
+    agent_loop.py           the ReAct loop (approval gate, history, compaction)
+    orchestrator.py         Planner → Coder → Reviewer → Tester pipeline
+    roles.py prompts.py     per-role prompts and tool subsets
+    self_correction.py      error assessment + correction budget
+    doom_loop.py            repetition guard
+    context_engine.py       repo-RAG indexing and retrieval
+    approval_policy.py      which tools need a human "yes"
+    plan.py                 the /plan store
+    session.py tools.py     submission types, tool router
+    submission_loop.py      event-driven loop (not currently wired up)
+    model_switcher.py model_ids.py local_models.py hf_access.py hf_tokens.py
+
+  llm/                    LLM layer (hard-routed to the deployed endpoint)
+    base.py                 normalized blocks/response, retries, usage tracking
+    openai_client.py        OpenAI-compat client for the deployed endpoint
+    router.py               deployed endpoint config ("CHANGE HERE" for production)
+    mock_client.py          scripted client for offline tests
+    client.py               back-compat shim (was agent/llm_client.py)
+
+  runtime/                tool execution
+    tools.py                the tool registry (~45 tools)
+    execution.py            Docker + subprocess backends, ExecResult
+    sandbox.py              string-in/string-out facade over the backend
+
+  memory/                 what the agent remembers
+    sessions.py             session traces (was agent/memory.py)
+    knowledge.py            playbook + FTS5 run archive + reflection
+
+  ml/                     the ML lifecycle tools
+    data_pipeline.py feature_engineering.py model_training.py
+    evaluation.py finetuning.py deployment.py multimodal_rag.py
+
+  search/                 the MLE-bench tree-search engine
     config.py journal.py agent.py runner.py report.py data_preview.py
-    static_check.py            V3: pre-execution AST gate
-  knowledge.py            NEW  V3: playbook + FTS5 run archive + reflection
-  doom_loop.py            NEW  V3: repetition guard for the ReAct loop
-  mcp_server.py           NEW  V3: MCP server (swarn mcp-serve)
-  execution.py            NEW  Docker + subprocess backends, ExecResult
-  llm_client.py           now a shim over agent/llm (back-compat)
-  sandbox.py              now a shim over agent/execution (back-compat)
-  tools.py                + solve_ml_task tool
-  prompts.py              + tells the agent when to prefer tree search
-  cli.py                  + `swarn solve` (--workers/--resume/--token-budget),
-                            mcp-serve, playbook
-  dashboard.py            + /api/runs + /api/playbook endpoints
-main.py                   provider-aware API-key check
-tests/                    NEW  57 tests + zero-dependency runner
+    static_check.py         pre-execution AST gate
+
+  observability/          guardrails + OpenTelemetry spans
+  integrations/           mcp_server.py (swarn mcp-serve), mcp_integration.py
+  web/                    dashboard.py (swarn serve)
+  messaging/              notification gateway
+  utils/                  terminal display, CRT boot, braille logo
+
+tests/                    79 tests + zero-dependency runner
 ```
+
+`agent.memory` and `agent.observability` re-export their old public names
+from their package `__init__`, so `from agent.memory import get_session_store`
+and `from agent.observability import GuardrailPolicy` are unchanged.

@@ -1,5 +1,13 @@
 # swarn — Phases 1–12 (Detailed Codebase Guide)
 
+> **Historical document — file paths below are pre-reorganisation.** The
+> flat `agent/*.py` modules have since been grouped into capability
+> packages (`core/`, `runtime/`, `memory/`, `ml/`, `observability/`,
+> `integrations/`, `web/`), and root-level `main.py` is gone: run the
+> agent with `swarn` or `python -m agent.cli`. See the Layout section in
+> README.md for the current map. The explanations of *how* each phase
+> works are still accurate; only the paths and the launch command moved.
+
 This README is written to be read top to bottom by someone trying to
 **understand the codebase**, not just run it. Every phase gets: what
 problem it solves, which file(s) implement it, how it actually works
