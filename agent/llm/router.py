@@ -30,13 +30,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from dotenv import load_dotenv
-
 from agent.llm.base import BaseLLMClient
 
-# Load .env before reading SWARN_DEPLOYED_* below, so every entry point
-# (swarn CLI, dashboard, MCP server) honors it — not just main.py.
-load_dotenv()
+# .env is loaded by agent.config at ITS import time (the one place env
+# vars are read), so every entry point — swarn CLI, dashboard, MCP
+# server, main.py — honors it regardless of import order.
 
 # ── deployed model configuration (single source of truth) ────────────────
 # TODO(production): replace these test-deployment defaults with the

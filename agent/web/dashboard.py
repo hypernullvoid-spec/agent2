@@ -57,13 +57,31 @@ those particular runs appear in the live feed, only in the session
 history once they complete (recall_session/`/api/sessions/{id}` still
 work for those, unaffected).
 
-Endpoints
+Endpoints (full request/response reference: agent/web/API.md, or /docs)
 ───────────
-  GET  /                     — the dashboard page (single HTML file, no build step)
-  GET  /api/sessions          — Phase 5's session index, as JSON
-  GET  /api/sessions/{id}      — one session's full trace.json
-  POST /api/run                 — trigger an agent run IN THIS PROCESS, streamed live
-  WS   /ws/live                  — live step-by-step feed of runs triggered via /api/run
+  GET    /                       — the built-in dashboard page (single HTML file)
+  WS     /ws/live                — live feed: session steps + job events
+
+  POST   /api/jobs               — submit a run (react/aide/team), returns immediately
+  GET    /api/jobs               — list jobs, newest first
+  GET    /api/jobs/{id}          — job status + result + progress events (?since=N)
+  POST   /api/jobs/{id}/cancel   — cooperative cancel
+
+  POST   /api/upload             — upload data file(s) → workspace/uploads/<ts>/
+  GET    /api/uploads            — list uploaded dataset batches (for re-use)
+  DELETE /api/uploads/{batch}    — delete an uploaded batch
+
+  GET    /api/sessions           — Phase 5's session index (ReAct history)
+  GET    /api/sessions/{id}      — one session's full trace.json
+  GET    /api/runs               — AIDE search-run index
+  GET    /api/runs/{id}          — one run's journal + report markdown
+  GET    /api/runs/{id}/files    — list a run's artifact files
+  GET    /api/runs/{id}/files/{path} — download one run artifact
+  GET    /api/workspace/files    — browse the agent workspace (?path=subdir)
+  GET    /api/workspace/file     — download a workspace file (?path=...)
+  GET    /api/playbook           — cross-run learned lessons
+
+  POST   /api/run                — LEGACY blocking run (kept for the built-in page)
 
 Running it
 ────────────
@@ -81,21 +99,47 @@ calls" framing Phase 15's ObservabilityHooks used for OTel tracing.
 
 import asyncio
 import json
+import os
+import time
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from agent.llm import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
 from agent.memory.memory import get_session_store, StepKind
+from agent.paths import WORKSPACE_DIR, safe_filename
+from agent.web.jobs import VALID_METHODS, attach_data_note, get_job_registry
 
 app = FastAPI(title="swarn dashboard (Phase 16)")
+
+# [frontend-api] NEW: CORS for the separate Next.js frontend (dev server on
+# :3000 by default) — without this, the browser blocks the frontend's fetch()
+# calls because it runs on a different origin than this API.
+# Override with a comma-separated SWARN_CORS_ORIGINS env var in deployment.
+_cors_origins = [o.strip() for o in os.environ.get(
+    "SWARN_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOADS_SUBDIR = "uploads"   # inside WORKSPACE_DIR, so ReAct's workspace-rooted tools can read them
 
 
 class RunRequest(BaseModel):
     task: str
     model: str = DEFAULT_MODEL  # display only — calls hard-route to the deployed endpoint
+    # [frontend-api] NEW fields: let the caller pick the engine and attach an
+    # uploaded dataset (used by the legacy blocking /api/run endpoint below).
+    method: str = "react"       # "react" (AgentLoop) or "aide" (solution-tree search)
+    data_dir: Optional[str] = None  # absolute path from /api/upload, or any local dir
+    steps: int = 10             # AIDE only: search budget (nodes to try)
 
 
 class ConnectionManager:
@@ -141,15 +185,26 @@ class ConnectionManager:
         as a second layer of defense even though add_step() already
         catches subscriber exceptions itself.
         """
-        if self._loop is None or self._queue is None:
-            return   # dashboard process hasn't finished starting up yet — drop silently
         payload = {
+            "channel":    "session",
             "session_id": session.id,
             "task":       session.task[:120],
             "kind":       step.kind.value if isinstance(step.kind, StepKind) else str(step.kind),
             "timestamp":  step.timestamp,
             "data":       step.data,
         }
+        self.push(payload)
+
+    # [frontend-api] NEW: on_step above used to do this queue hand-off itself;
+    # the logic was extracted into push() so job events (AIDE node progress,
+    # status changes) can ride the same websocket as session steps. Session
+    # payloads also gained a "channel": "session" field so the frontend can
+    # tell the two frame types apart.
+    def push(self, payload: dict) -> None:
+        """Thread-safe fire-and-forget broadcast of any payload to all
+        websocket clients. Never raises; drops silently before startup."""
+        if self._loop is None or self._queue is None:
+            return   # dashboard process hasn't finished starting up yet — drop silently
         try:
             asyncio.run_coroutine_threadsafe(self._queue.put(payload), self._loop)
         except Exception:
@@ -173,10 +228,27 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# [frontend-api] NEW: bridge from the job registry to the websocket. Every
+# progress event a background job emits (see agent/web/jobs.py) is wrapped in
+# a "channel": "job" frame and broadcast live to all connected clients.
+def _on_job_event(job, event) -> None:
+    """JobRegistry listener → websocket. Runs on the job's runner thread."""
+    manager.push({
+        "channel": "job",
+        "job_id":  job.id,
+        "method":  job.method,
+        "status":  job.status,
+        "task":    job.task[:120],
+        "event":   event,
+    })
+
+
 @app.on_event("startup")
 async def _startup():
     manager.bind_to_running_loop(asyncio.get_running_loop())
     get_session_store().subscribe_to_all_sessions(manager.on_step)
+    # [frontend-api] NEW: subscribe the websocket to job events as well
+    get_job_registry().add_listener(_on_job_event)
     asyncio.create_task(manager.broadcast_loop())
 
 
@@ -260,6 +332,223 @@ def api_playbook():
         return {"playbook": ""}
 
 
+# [frontend-api] NEW endpoint: file upload from the browser ("give the
+# flexibility to add the file the user wants to analyze data on").
+@app.post("/api/upload")
+async def api_upload(files: list[UploadFile] = File(...)):
+    """
+    Save uploaded data files into workspace/uploads/<timestamp>/ and return
+    that directory. The returned `data_dir` is what /api/run expects:
+    AIDE passes it to run_search() as the task's data directory; ReAct
+    gets it appended to the task text as a workspace-relative path (the
+    agent's file tools are rooted at WORKSPACE_DIR, so uploads must live
+    inside it to be reachable).
+    """
+    batch = str(int(time.time()))
+    dest = os.path.join(WORKSPACE_DIR, UPLOADS_SUBDIR, batch)
+    os.makedirs(dest, exist_ok=True)
+    saved = []
+    for f in files:
+        # safe_filename() strips dots (it was written for directory names),
+        # which would break extensions ("movies.csv" → "movies_csv") — so
+        # sanitize the stem and extension separately and keep the dot.
+        stem, ext = os.path.splitext(os.path.basename(f.filename or "upload.dat"))
+        name = safe_filename(stem) or "upload"
+        if ext:
+            name += "." + safe_filename(ext.lstrip("."))
+        path = os.path.join(dest, name)
+        with open(path, "wb") as out:
+            while chunk := await f.read(1 << 20):
+                out.write(chunk)
+        saved.append(name)
+    return {
+        "data_dir": dest,                                   # absolute — for AIDE
+        "relative_dir": f"{UPLOADS_SUBDIR}/{batch}",        # workspace-relative — for ReAct
+        "files": saved,
+    }
+
+
+# ── [frontend-api] NEW: async job API (what the Next.js frontend should use) ──
+#
+# Unlike the legacy POST /api/run (which blocks until the whole run finishes),
+# these endpoints return immediately and let the frontend poll or stream —
+# the actual work happens on background threads inside agent/web/jobs.py.
+#
+#   POST /api/jobs                submit → returns immediately with the job
+#   GET  /api/jobs                 list all jobs, newest first
+#   GET  /api/jobs/{id}?since=N     status + result + events[N:] (poll with
+#                                   since=<last n_events> for increments;
+#                                   or skip polling and watch /ws/live)
+#   POST /api/jobs/{id}/cancel      cooperative cancel (react: between steps,
+#                                   aide: at the next completed node,
+#                                   team: unsupported — runs to completion)
+
+class JobRequest(BaseModel):
+    task: str
+    method: str = "react"           # react | aide | team
+    data_dir: Optional[str] = None  # from /api/upload (required for aide)
+    steps: int = 10                 # aide search budget
+    model: str = ""                 # display only — calls hard-route to the deployed endpoint
+
+
+@app.post("/api/jobs")
+def api_job_submit(body: JobRequest):
+    """Validate the request, hand it to the JobRegistry (which starts a
+    background thread), and return the job summary right away — the frontend
+    gets an id it can watch instead of a request that hangs for the whole run."""
+    if body.method not in VALID_METHODS:
+        raise HTTPException(422, f"method must be one of {VALID_METHODS}")
+    if body.method == "aide" and (not body.data_dir or not os.path.isdir(body.data_dir)):
+        raise HTTPException(422, "AIDE needs a data directory — upload files first "
+                                 "and pass the returned data_dir")
+    if body.data_dir and not os.path.isdir(body.data_dir):
+        raise HTTPException(422, f"data_dir does not exist: {body.data_dir}")
+    job = get_job_registry().submit(task=body.task, method=body.method,
+                                    data_dir=body.data_dir, steps=body.steps,
+                                    model=body.model)
+    return job.summary()
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    """All jobs submitted to this server process, newest first."""
+    return {"jobs": [j.summary() for j in get_job_registry().list()]}
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job_detail(job_id: str, since: int = 0):
+    """One job's status + result + progress events. Pass ?since=<n_events
+    from the previous poll> to receive only the events you haven't seen."""
+    job = get_job_registry().get(job_id)
+    if job is None:
+        raise HTTPException(404, f"no job '{job_id}'")
+    return job.detail(since=since)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def api_job_cancel(job_id: str):
+    """Cooperative cancel — react stops between steps, aide at the next
+    finished node, team can't stop mid-pipeline (we say so in the response)."""
+    job = get_job_registry().cancel(job_id)
+    if job is None:
+        raise HTTPException(404, f"no job '{job_id}'")
+    if job.method == "team" and job.status == "running":
+        return {**job.summary(),
+                "note": "team runs can't be interrupted mid-run — cancel recorded, "
+                        "but the pipeline will run to completion"}
+    return job.summary()
+
+
+# ── [frontend-api] NEW: uploaded datasets (list / delete) ───────────────
+# Lets the frontend show previously uploaded files so users can re-run
+# analyses on the same dataset without uploading it again every time.
+
+@app.get("/api/uploads")
+def api_uploads():
+    """Every uploaded dataset batch, newest first — pass a batch's
+    `data_dir` straight into POST /api/jobs to re-use it."""
+    root = os.path.join(WORKSPACE_DIR, UPLOADS_SUBDIR)
+    batches = []
+    if os.path.isdir(root):
+        for batch in sorted(os.listdir(root), reverse=True):
+            bdir = os.path.join(root, batch)
+            if not os.path.isdir(bdir):
+                continue
+            files = [{"name": n, "size": os.path.getsize(os.path.join(bdir, n))}
+                     for n in sorted(os.listdir(bdir))]
+            batches.append({
+                "batch": batch,
+                "data_dir": bdir,
+                "relative_dir": f"{UPLOADS_SUBDIR}/{batch}",
+                "created": os.path.getmtime(bdir),
+                "files": files,
+            })
+    return {"uploads": batches}
+
+
+@app.delete("/api/uploads/{batch}")
+def api_upload_delete(batch: str):
+    """Remove one uploaded dataset batch. The safe_filename() equality check
+    rejects anything with slashes/dots so a crafted batch name can't reach
+    outside workspace/uploads/."""
+    import shutil
+    if batch != safe_filename(batch):
+        raise HTTPException(422, "invalid batch name")
+    bdir = os.path.join(WORKSPACE_DIR, UPLOADS_SUBDIR, batch)
+    if not os.path.isdir(bdir):
+        raise HTTPException(404, f"no upload batch '{batch}'")
+    shutil.rmtree(bdir)
+    return {"deleted": batch}
+
+
+# ── [frontend-api] NEW: artifacts — browse & download run outputs ───────
+# The whole point of a run is its outputs (report.md, best_solution.py,
+# submission.csv, plots). These endpoints let the frontend list and download
+# them; every path goes through _guarded_join so a request can never read
+# files outside the runs/ or workspace/ directories.
+
+def _guarded_join(root: str, rel_path: str) -> str:
+    """Resolve rel_path inside root; 403 on traversal attempts."""
+    full = os.path.realpath(os.path.join(root, rel_path))
+    if full != os.path.realpath(root) and not full.startswith(os.path.realpath(root) + os.sep):
+        raise HTTPException(403, "path escapes the allowed directory")
+    return full
+
+
+@app.get("/api/runs/{run_id}/files")
+def api_run_files(run_id: str):
+    """Recursive file listing of one search run's directory (journal,
+    report, best_solution.py, workspace outputs like submission.csv)."""
+    rdir = _guarded_join(_runs_dir(), run_id)
+    if not os.path.isdir(rdir):
+        raise HTTPException(404, f"no run '{run_id}'")
+    files = []
+    for dirpath, _dirnames, filenames in os.walk(rdir):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            files.append({"path": os.path.relpath(full, rdir),
+                          "size": os.path.getsize(full)})
+            if len(files) >= 500:
+                return {"run_id": run_id, "files": files, "truncated": True}
+    return {"run_id": run_id, "files": sorted(files, key=lambda f: f["path"])}
+
+
+@app.get("/api/runs/{run_id}/files/{file_path:path}")
+def api_run_file(run_id: str, file_path: str):
+    """Download one file from a run directory."""
+    full = _guarded_join(_runs_dir(), os.path.join(run_id, file_path))
+    if not os.path.isfile(full):
+        raise HTTPException(404, f"no file '{file_path}' in run '{run_id}'")
+    return FileResponse(full, filename=os.path.basename(full))
+
+
+@app.get("/api/workspace/files")
+def api_workspace_files(path: str = ""):
+    """Non-recursive listing of a workspace directory (ReAct outputs,
+    plots/, uploads/…). `path` is workspace-relative; empty = root."""
+    full = _guarded_join(WORKSPACE_DIR, path or ".")
+    if not os.path.isdir(full):
+        raise HTTPException(404, f"no workspace directory '{path}'")
+    entries = []
+    for name in sorted(os.listdir(full)):
+        p = os.path.join(full, name)
+        entries.append({"name": name, "is_dir": os.path.isdir(p),
+                        "size": os.path.getsize(p) if os.path.isfile(p) else None})
+    return {"path": path, "entries": entries}
+
+
+@app.get("/api/workspace/file")
+def api_workspace_file(path: str):
+    """Download one workspace file (e.g. plots/chart.png, submission.csv)."""
+    full = _guarded_join(WORKSPACE_DIR, path)
+    if not os.path.isfile(full):
+        raise HTTPException(404, f"no workspace file '{path}'")
+    return FileResponse(full, filename=os.path.basename(full))
+
+
+# ── [frontend-api] legacy blocking endpoint — kept only so the built-in
+# HTML page below keeps working; a real frontend should use /api/jobs ──
+
 @app.post("/api/run")
 async def api_run(body: RunRequest):
     """
@@ -285,17 +574,46 @@ async def api_run(body: RunRequest):
     this (or just before) to see the steps as they happen rather than
     only the final result.
     """
+    loop = asyncio.get_running_loop()
+
+    if body.method == "aide":
+        # [frontend-api] NEW branch: AIDE-style solution-tree search (same
+        # engine as `swarn solve`), selected by the page's method radio.
+        # Its progress lives in runs/<id>/journal.json, not SessionStore,
+        # so it shows up in the "Search runs" list rather than /ws/live.
+        if not body.data_dir or not os.path.isdir(body.data_dir):
+            return {"error": f"AIDE needs a data directory — upload a file first "
+                             f"(got: {body.data_dir!r})"}
+        from agent.search import SearchConfig, run_search
+
+        def _solve():
+            return run_search(body.task, data_dir=body.data_dir,
+                              config=SearchConfig(steps=body.steps))
+        result = await loop.run_in_executor(None, _solve)
+        return {
+            "method": "aide",
+            "run_id": result.run_id,
+            "steps_done": result.steps_done,
+            "best_metric": result.best.metric if result.best else None,
+            "solution_path": result.solution_path if result.best else None,
+            "report_path": result.report_path,
+        }
+
+    # default: ReAct (Phase 1–15 AgentLoop)
     from agent.core.agent_loop import AgentLoop
     from agent.core.self_correction import SelfCorrectionPolicy
     from agent.observability.observability import GuardrailPolicy
+
+    # [frontend-api] NEW: if a dataset was uploaded, tell the agent where it
+    # lives (workspace-relative — its file tools are rooted at WORKSPACE_DIR).
+    task = attach_data_note(body.task, body.data_dir)
 
     agent = AgentLoop(
         model=body.model,
         correction_policy=SelfCorrectionPolicy(),
         guardrail_policy=GuardrailPolicy(),
     )
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, agent.run, body.task)
+    result = await loop.run_in_executor(None, agent.run, task)
     return result
 
 
@@ -368,6 +686,19 @@ _DASHBOARD_HTML = """\
   <div id="sidebar">
     <h2>Run a task (this process)</h2>
     <textarea id="task-input" rows="3" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px;font-family:inherit;font-size:12px"></textarea>
+    <!-- [frontend-api] NEW controls: pick the engine (ReAct agent vs AIDE
+         tree search), set AIDE's search budget, and attach data files -->
+    <div style="display:flex;gap:12px;margin-top:6px;font-size:12px;align-items:center">
+      <label style="cursor:pointer"><input type="radio" name="method" value="react" checked> ReAct</label>
+      <label style="cursor:pointer"><input type="radio" name="method" value="aide"> AIDE</label>
+      <span id="aide-opts" style="display:none;color:#8b949e">steps
+        <input id="steps-input" type="number" value="10" min="1" max="100"
+               style="width:48px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px">
+      </span>
+    </div>
+    <input id="file-input" type="file" multiple
+           style="margin-top:6px;width:100%;font-size:11px;color:#8b949e">
+    <div id="upload-info" style="font-size:11px;color:#8b949e;margin-top:2px"></div>
     <button id="run-btn" style="margin-top:6px;width:100%;background:#238636;color:white;border:none;border-radius:6px;padding:6px;cursor:pointer">Run &amp; watch live</button>
     <h2 style="margin-top:16px">Recent sessions</h2>
     <div id="session-list">Loading…</div>
@@ -478,22 +809,56 @@ loadPlaybook();
 setInterval(loadSessions, 5000);
 setInterval(loadRuns, 7000);
 
+// [frontend-api] NEW: toggle the AIDE-only "steps" option with the method
+// radio — AIDE needs a data directory, so a file is required only for it
+document.querySelectorAll('input[name="method"]').forEach(r => r.onchange = () => {
+  document.getElementById('aide-opts').style.display =
+    document.querySelector('input[name="method"]:checked').value === 'aide' ? '' : 'none';
+});
+
+// [frontend-api] NEW: send the chosen files to POST /api/upload before the
+// run starts; the returned data_dir is passed along in the /api/run body
+async function uploadFiles() {
+  const input = document.getElementById('file-input');
+  if (!input.files.length) return null;
+  const form = new FormData();
+  for (const f of input.files) form.append('files', f);
+  const res = await fetch('/api/upload', {method: 'POST', body: form});
+  const data = await res.json();
+  document.getElementById('upload-info').textContent =
+    `uploaded ${data.files.join(', ')} → ${data.relative_dir}`;
+  return data;
+}
+
+// [frontend-api] CHANGED: the run button now uploads any chosen files first,
+// then submits {task, method, steps, data_dir} instead of just {task}
 document.getElementById('run-btn').onclick = async () => {
   const task = document.getElementById('task-input').value.trim();
   if (!task) return;
-  feed.innerHTML = '';
+  const method = document.querySelector('input[name="method"]:checked').value;
   const btn = document.getElementById('run-btn');
   btn.disabled = true;
-  btn.textContent = 'Running…';
+  btn.textContent = 'Uploading…';
   try {
+    const upload = await uploadFiles();
+    if (method === 'aide' && !upload) {
+      document.getElementById('upload-info').textContent = 'AIDE needs a data file — choose one first.';
+      return;
+    }
+    feed.innerHTML = '';
+    btn.textContent = 'Running…';
+    const body = {task, method, steps: parseInt(document.getElementById('steps-input').value) || 10};
+    if (upload) body.data_dir = upload.data_dir;
     const res = await fetch('/api/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({task}),
+      body: JSON.stringify(body),
     });
     const result = await res.json();
-    appendStep({session_id: result.session_id, task, kind: 'complete', timestamp: Date.now()/1000, data: result});
+    appendStep({session_id: result.session_id || result.run_id || '--------', task,
+                kind: 'complete', timestamp: Date.now()/1000, data: result});
     loadSessions();
+    loadRuns();
   } finally {
     btn.disabled = false;
     btn.textContent = 'Run & watch live';

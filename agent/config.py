@@ -21,6 +21,14 @@ Two access shapes, deliberately:
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
+
+# Load .env BEFORE any constant below is evaluated. This module freezes
+# module-level settings at import time, so the .env must be in the
+# environment by then — entry points that call load_dotenv() later (or
+# not at all) would otherwise silently get the defaults.
+load_dotenv()
+
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 

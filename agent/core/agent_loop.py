@@ -191,7 +191,7 @@ class AgentLoop:
 
     # ─────────────────────────────────────────────────── public entry point
 
-    def run(self, task: str) -> dict:
+    def run(self, task: str, stop_event=None, on_session=None) -> dict:
         """
         Run the ReAct loop to completion (or until aborted/iteration-capped).
 
@@ -200,8 +200,24 @@ class AgentLoop:
         so a caller — main.py for single-agent use, or Phase 11's
         Orchestrator for multi-role use — can branch on the result
         without reaching into Session internals or parsing stdout.
+
+        stop_event: optional threading.Event — checked between iterations;
+        when set, the run stops with outcome "cancelled" (the current LLM
+        call / tool batch finishes first; nothing is interrupted mid-flight).
+        on_session: optional callback invoked with the Session right after
+        it's created, so an async caller (the dashboard's job registry) can
+        learn the session id long before run() returns.
         """
         session  = self._store.new_session(task=task, model=self.model)
+        # [frontend-api] NEW: report the session id to the caller immediately.
+        # The dashboard's job registry passes on_session so the web frontend
+        # can match this run's live websocket steps to its job id right away,
+        # instead of waiting until run() returns at the very end.
+        if on_session is not None:
+            try:
+                on_session(session)
+            except Exception:  # noqa: BLE001 — an observer must not kill the run
+                pass
         messages = [{"role": "user", "content": task}]
         doom     = DoomLoopDetector()
 
@@ -215,6 +231,17 @@ class AgentLoop:
             pass
 
         for step_num in range(1, MAX_ITERATIONS + 1):
+
+            # [frontend-api] NEW: cooperative cancellation (dashboard job API).
+            # POST /api/jobs/{id}/cancel sets this threading.Event; we check it
+            # once per loop iteration, so the run stops cleanly BETWEEN steps —
+            # the in-flight LLM call / tool batch is never killed halfway.
+            if stop_event is not None and stop_event.is_set():
+                ui.warn("cancelled", "stop requested — ending run before next step")
+                session.outcome = "cancelled"
+                session.add_step(StepKind.ERROR, reason="cancelled_by_user", step=step_num)
+                self._store.close_session(session)
+                return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
 
             # ── V3: context compaction ──────────────────────────────
             n_compacted = compact_messages(messages)
