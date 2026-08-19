@@ -71,7 +71,7 @@ import json
 import threading
 from typing import Optional
 
-from agent.tools import TOOL_REGISTRY
+from agent.runtime.tools import TOOL_REGISTRY
 
 DEFAULT_CALL_TIMEOUT_S = 60
 

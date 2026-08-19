@@ -2,7 +2,7 @@
 
 import tempfile
 
-from agent.knowledge import (KnowledgeStore, PLAYBOOK_MAX_CHARS,
+from agent.memory.knowledge import (KnowledgeStore, PLAYBOOK_MAX_CHARS,
                              reflect_on_run)
 from agent.llm.mock_client import MockLLMClient, tool_response
 from agent.search.journal import Journal, Node

@@ -11,7 +11,7 @@ designed to *beat* HeyNeo on the things that decide benchmarks and real work:
    a single-pass ReAct agent hand-driving individual tools.
 2. **BYO-LLM** (`agent/llm/`) — Anthropic, OpenAI, Ollama, vLLM, Gemini, Groq,
    or any OpenAI-compatible endpoint, selected by one model-spec string.
-3. **Docker-optional execution** (`agent/execution.py`) — Docker when the
+3. **Docker-optional execution** (`agent/runtime/execution.py`) — Docker when the
    daemon is up, a real cross-platform subprocess backend (Windows-safe,
    per-call timeouts) when it isn't.
 
@@ -21,7 +21,7 @@ designed to *beat* HeyNeo on the things that decide benchmarks and real work:
    solution at a time; our scheduler pipelines propose→execute→review across
    a thread pool with reservation-aware policy (no duplicate debugging, no
    draft explosion). Four drafts now cost roughly one draft's wall time.
-5. **Self-improvement across runs** (`agent/knowledge.py`) — every finished
+5. **Self-improvement across runs** (`agent/memory/knowledge.py`) — every finished
    run is reflected on by a cheap LLM call that distills *generalizable*
    lessons into a hard-capped playbook (hermes-agent style bounded memory),
    and archived in a SQLite FTS5 index. Future runs get the playbook plus
@@ -35,7 +35,7 @@ designed to *beat* HeyNeo on the things that decide benchmarks and real work:
 8. **Budgets** — `--token-budget` stops a run before costs run away
    (transparent, unlike HeyNeo's opaque credits); time budgets shrink per-node
    timeouts to fit.
-9. **Doom-loop detection + context compaction** (`agent/doom_loop.py`) — the
+9. **Doom-loop detection + context compaction** (`agent/core/doom_loop.py`) — the
    ReAct loop detects same-call-same-result repetition (result-hash aware, so
    polling never false-positives) and injects a corrective note; old tool
    results are compacted once the conversation crosses a size budget.

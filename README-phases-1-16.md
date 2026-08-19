@@ -44,7 +44,7 @@ made in Phase 1 and never violated since, is:
 > it does not change.**
 
 Every single phase from 2 through 12 either (a) adds new tools to
-`agent/tools.py`'s registry, or (b) adds new *configuration* on top of
+`agent/runtime/tools.py`'s registry, or (b) adds new *configuration* on top of
 the existing loop (Phase 11's roles, Phase 4's correction policy). Not
 one of them required rewriting `agent_loop.py`'s control flow. Keep this
 in mind — it's the thread that ties all twelve phases together, and

@@ -42,12 +42,9 @@ import os
 import textwrap
 from typing import Optional
 
-from agent.model_training import get_model_trainer
+from agent.ml.model_training import get_model_trainer
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
-DEPLOYMENTS_SUBDIR = "deployments"
+from agent.paths import WORKSPACE_DIR, DEPLOYMENTS_SUBDIR, safe_filename
 
 # sklearn-native estimator class name prefixes that skl2onnx can convert.
 # XGBoost/LightGBM/PyTorch need their own converters and aren't attempted here.
@@ -62,7 +59,7 @@ class DeploymentPackager:
     """
 
     def _deployments_dir(self, artifact_id: str) -> str:
-        safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in artifact_id)
+        safe = safe_filename(artifact_id)
         d = os.path.join(WORKSPACE_DIR, DEPLOYMENTS_SUBDIR, safe)
         os.makedirs(d, exist_ok=True)
         return d

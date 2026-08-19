@@ -35,7 +35,7 @@ graph LR
 
 ## 2. Docker
 
-- **Files:** `agent/execution.py` (`DockerBackend`, `_docker_available`).
+- **Files:** `agent/runtime/execution.py` (`DockerBackend`, `_docker_available`).
 - **Usage:** `docker.from_env()`; one detached container per backend
   (`tail -f /dev/null`, `auto_remove=True`, workspace bind-mounted rw at `/workspace`,
   `mem_limit="2g"`, `cpu_count=2`); commands via `container.exec_run(demux=True)`.

@@ -67,7 +67,7 @@ Endpoints
 
 Running it
 ────────────
-  python -m agent.dashboard          (dev, uses uvicorn's --reload-friendly run)
+  python -m agent.web.dashboard          (dev, uses uvicorn's --reload-friendly run)
   swarn serve --port 8420               (Phase 16's CLI wrapper, see cli.py)
 
 Note on scope
@@ -88,7 +88,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from agent.llm import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
-from agent.memory import get_session_store, StepKind
+from agent.memory.memory import get_session_store, StepKind
 
 app = FastAPI(title="swarn dashboard (Phase 16)")
 
@@ -254,7 +254,7 @@ def api_run_detail(run_id: str):
 def api_playbook():
     """V3: the cross-run playbook — lessons the agent learned from past runs."""
     try:
-        from agent.knowledge import KnowledgeStore
+        from agent.memory.knowledge import KnowledgeStore
         return {"playbook": KnowledgeStore().playbook()}
     except Exception:  # noqa: BLE001
         return {"playbook": ""}
@@ -285,9 +285,9 @@ async def api_run(body: RunRequest):
     this (or just before) to see the steps as they happen rather than
     only the final result.
     """
-    from agent.agent_loop import AgentLoop
-    from agent.self_correction import SelfCorrectionPolicy
-    from agent.observability import GuardrailPolicy
+    from agent.core.agent_loop import AgentLoop
+    from agent.core.self_correction import SelfCorrectionPolicy
+    from agent.observability.observability import GuardrailPolicy
 
     agent = AgentLoop(
         model=body.model,

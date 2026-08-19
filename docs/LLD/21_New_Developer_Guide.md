@@ -21,7 +21,7 @@ subsystem imports are lazy.
 ## The mental model (memorize these five things)
 
 1. **Everything is a tool.** The LLM's only lever is calling names in `TOOL_REGISTRY`
-   (`agent/tools.py`). `AgentLoop` never special-cases capabilities (except recognizing
+   (`agent/runtime/tools.py`). `AgentLoop` never special-cases capabilities (except recognizing
    `finish_task` as the stop signal).
 2. **One LLM endpoint.** `agent/llm/router.py` hard-routes every call; model flags are
    decorative; `mock:*` is the offline switch.
@@ -47,15 +47,15 @@ Full traces: [18_Sequence_Diagrams.md](18_Sequence_Diagrams.md).
 
 | Step | File | Why |
 |---|---|---|
-| 1 | `agent/tools.py` (top 180 lines) | The registry, `get_tool_definitions`, `run_tool`, `_safe_path` — the system's spine |
-| 2 | `agent/agent_loop.py` | The whole ReAct loop in one class; every policy hook is visible in `run()` |
+| 1 | `agent/runtime/tools.py` (top 180 lines) | The registry, `get_tool_definitions`, `run_tool`, `_safe_path` — the system's spine |
+| 2 | `agent/core/agent_loop.py` | The whole ReAct loop in one class; every policy hook is visible in `run()` |
 | 3 | `agent/llm/base.py` + `router.py` + `openai_client.py` | Message normalization, retries, the routing rule |
-| 4 | `agent/self_correction.py`, `doom_loop.py`, `observability.py` | The three enrichment layers, in their application order |
-| 5 | `agent/memory.py` | Sessions: what gets recorded, when it's persisted, the pub/sub hook |
+| 4 | `agent/core/self_correction.py`, `doom_loop.py`, `observability.py` | The three enrichment layers, in their application order |
+| 5 | `agent/memory/memory.py` | Sessions: what gets recorded, when it's persisted, the pub/sub hook |
 | 6 | `agent/search/journal.py` → `agent.py` → `runner.py` | The tree search, in data → policy → orchestration order |
-| 7 | `agent/execution.py` | Both backends and `ExecResult` |
-| 8 | `agent/roles.py` + `orchestrator.py` | Team mode |
-| 9 | `agent/knowledge.py` | The self-improvement loop |
+| 7 | `agent/runtime/execution.py` | Both backends and `ExecResult` |
+| 8 | `agent/core/roles.py` + `orchestrator.py` | Team mode |
+| 9 | `agent/memory/knowledge.py` | The self-improvement loop |
 | 10 | Skim `data_pipeline.py` → `feature_engineering.py` → `model_training.py` → `evaluation.py` → `deployment.py` | The ML chain; each consumes the previous one's registry/artifacts |
 | 11 | `mcp_integration.py`, `dashboard.py`, `mcp_server.py` | The concurrency edges (read module docstrings first — they're excellent) |
 

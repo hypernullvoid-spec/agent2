@@ -18,7 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from agent.execution import make_backend
+from agent.runtime.execution import make_backend
 from agent.search import data_preview as dp
 from agent.search.agent import SearchAgent
 from agent.search.config import SearchConfig
@@ -163,7 +163,7 @@ def run_search(
     store = None
     if cfg.use_knowledge or cfg.reflect:
         try:
-            from agent.knowledge import KnowledgeStore
+            from agent.memory.knowledge import KnowledgeStore
             store = KnowledgeStore(cfg.knowledge_dir)
             if cfg.use_knowledge:
                 knowledge_context = store.context_for_task(task)
@@ -286,7 +286,7 @@ def run_search(
                         code=best.code if best else "",
                         metric=best.metric if best else None)
         if cfg.reflect:
-            from agent.knowledge import reflect_on_run
+            from agent.memory.knowledge import reflect_on_run
             lessons = reflect_on_run(task, journal, agent.feedback_llm, store, run_id)
             if lessons:
                 print(f"[search] playbook updated with {len(lessons)} lesson(s)")

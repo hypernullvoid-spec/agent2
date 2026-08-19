@@ -11,8 +11,8 @@ graph TB
     subgraph FrontEnds["Front ends (pick one per process)"]
         REPL["main.py<br/>interactive REPL"]
         CLI["agent/cli.py<br/>swarn (Typer)"]
-        WEB["agent/dashboard.py<br/>FastAPI + websocket"]
-        MCPSRV["agent/mcp_server.py<br/>FastMCP (stdio)"]
+        WEB["agent/web/dashboard.py<br/>FastAPI + websocket"]
+        MCPSRV["agent/integrations/mcp_server.py<br/>FastMCP (stdio)"]
     end
 
     subgraph Cores["Agent cores"]

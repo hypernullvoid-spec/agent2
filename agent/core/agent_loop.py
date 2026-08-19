@@ -45,24 +45,23 @@ evolves as new phases add to it.
 
 import os
 
-from agent            import ui
+from agent.utils            import ui
 from agent.llm            import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
-from agent.llm_client     import LLMClient
-from agent.tools          import get_tool_definitions, run_tool
-from agent.prompts        import SYSTEM_PROMPT
-from agent.memory         import get_session_store, Session, StepKind
-from agent.self_correction import SelfCorrectionPolicy
-from agent.doom_loop       import DoomLoopDetector, WARNING as DOOM_WARNING
+from agent.llm.llm_client     import LLMClient
+from agent.runtime.tools          import get_tool_definitions, run_tool
+from agent.messaging.prompts        import SYSTEM_PROMPT
+from agent.memory.memory         import get_session_store, Session, StepKind
+from agent.core.self_correction import SelfCorrectionPolicy
+from agent.core.doom_loop       import DoomLoopDetector, WARNING as DOOM_WARNING
 
 from typing import Optional
 
-MAX_ITERATIONS = int(os.environ.get("SWARN_MAX_ITERATIONS", "30"))
+from agent.config import MAX_ITERATIONS, CONTEXT_CHAR_BUDGET
 
 # Context compaction (V3): long runs accumulate huge tool results in the
 # message history. When the total conversation size crosses this budget,
 # old tool results are truncated head+tail — deterministic, no extra LLM
 # call, and the last few turns are always kept verbatim.
-CONTEXT_CHAR_BUDGET = int(os.environ.get("SWARN_CONTEXT_CHAR_BUDGET", "400000"))
 _KEEP_RECENT_MESSAGES = 6
 _TRUNC_HEAD, _TRUNC_TAIL = 700, 500
 
@@ -133,8 +132,8 @@ class AgentLoop:
         system_prompt:       Optional[str]                  = None,
         tool_names:          Optional[list[str]]             = None,
         role_name:           Optional[str]                   = None,
-        guardrail_policy:    Optional["object"]              = None,   # agent.observability.GuardrailPolicy
-        observability_hooks: Optional["object"]              = None,   # agent.observability.ObservabilityHooks
+        guardrail_policy:    Optional["object"]              = None,   # agent.observability.observability.GuardrailPolicy
+        observability_hooks: Optional["object"]              = None,   # agent.observability.observability.ObservabilityHooks
     ):
         self.llm           = LLMClient(model=model)
         self.model         = model

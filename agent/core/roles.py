@@ -51,7 +51,7 @@ tool it wasn't given, the same hard boundary every other tool-permission
 decision in this codebase relies on.
 """
 
-from agent.prompts import SYSTEM_PROMPT
+from agent.messaging.prompts import SYSTEM_PROMPT
 
 
 def _extract_shared_core(full_prompt: str) -> str:

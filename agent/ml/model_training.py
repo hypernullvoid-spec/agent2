@@ -36,7 +36,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from agent.data_pipeline import get_data_pipeline
+from agent.ml.data_pipeline import get_data_pipeline
 
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_RANDOM_STATE = 42
