@@ -1,7 +1,7 @@
 # 09 — Tool Execution
 
-Files: `agent/tools.py` (registry + all built-ins), `agent/execution.py` + `agent/sandbox.py`
-(code execution), `agent/mcp_integration.py` (dynamic remote tools).
+Files: `agent/runtime/tools.py` (registry + all built-ins), `agent/runtime/execution.py` + `agent/runtime/sandbox.py`
+(code execution), `agent/integrations/mcp_integration.py` (dynamic remote tools).
 
 ## The registry
 

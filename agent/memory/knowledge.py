@@ -37,8 +37,8 @@ import sqlite3
 import time
 from typing import Optional
 
-DEFAULT_KNOWLEDGE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "knowledge"))
+from agent import config
+from agent.paths import KNOWLEDGE_DIR as DEFAULT_KNOWLEDGE_DIR
 
 PLAYBOOK_MAX_CHARS = 6000          # hard cap — forces curation (hermes-style)
 LESSON_MAX_CHARS = 300             # one lesson = one distilled sentence or two
@@ -52,7 +52,7 @@ class KnowledgeStore:
 
     def __init__(self, root: Optional[str] = None):
         self.root = os.path.abspath(
-            root or os.environ.get("SWARN_KNOWLEDGE_DIR") or DEFAULT_KNOWLEDGE_DIR)
+            root or config.knowledge_dir() or DEFAULT_KNOWLEDGE_DIR)
         os.makedirs(self.root, exist_ok=True)
         self.playbook_path = os.path.join(self.root, "playbook.md")
         self.db_path = os.path.join(self.root, "runs.db")

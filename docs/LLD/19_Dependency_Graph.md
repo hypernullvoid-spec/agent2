@@ -11,7 +11,7 @@ graph TD
 ```
 
 `agent.llm` depends on nothing else in the project (leaf package).
-`agent.search` depends on `agent.llm`, `agent.execution`, and (lazily) `agent.knowledge`.
+`agent.search` depends on `agent.llm`, `agent.runtime.execution`, and (lazily) `agent.memory.memory.knowledge`.
 
 ## Module import graph (static imports; dashed = lazy/function-level import)
 

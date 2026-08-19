@@ -35,7 +35,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-SESSIONS_DIR = Path(__file__).parent.parent / "sessions"
+from agent.paths import SESSIONS_DIR
 
 
 # ─── step model ───────────────────────────────────────────────────────────────

@@ -13,6 +13,21 @@ agent2/
 ├── README-phases-1-16.md    # Historical phase-by-phase codebase guide
 ├── docs/                    # Design documents (.docx/.pdf/.pptx) + this LLD set
 ├── agent/                   # THE package — all source code
+│   ├── __init__.py          # empty
+│   ├── cli.py               # Typer CLI (`swarn` command)
+│   ├── config.py            # every SWARN_* env var, read in one place
+│   ├── paths.py             # WORKSPACE_DIR/RUNS_DIR/… + workspace path guard
+│   ├── core/                # ReAct loop, roles, orchestrator, correction/doom policies
+│   ├── integrations/        # MCP client + MCP server
+│   ├── llm/                 # deployed-endpoint router, clients, fine-tuning
+│   ├── memory/              # session traces, cross-run knowledge, repo/multi-modal RAG
+│   ├── messaging/           # prompt construction
+│   ├── ml/                  # data → features → training → evaluation
+│   ├── observability/       # guardrails, benchmarks, OTel hooks
+│   ├── runtime/             # execution backends, tool registry, deployment packaging
+│   ├── search/              # AIDE-style solution tree search
+│   ├── utils/               # Rich terminal rendering
+│   └── web/                 # FastAPI dashboard
 ├── tests/                   # 9 test modules + zero-dependency runner
 ├── knowledge/               # RUNTIME: playbook.md + runs.db (KnowledgeStore) [gitignored]
 ├── runs/                    # RUNTIME: tree-search runs (journal.json, report.md, best_solution.py, workspace/) [gitignored]
@@ -27,16 +42,18 @@ agent2/
 
 ## `agent/` — module-by-module
 
-### Core loop & entry surfaces
+### Root entry surfaces & shared configuration
 
 | File | Lines | Purpose |
 |---|---|---|
-| `agent_loop.py` | 341 | `AgentLoop` — the ReAct loop; context compaction; integrates correction/guardrail/doom-loop/observability policies. The one file that "deliberately evolves" as phases are added. |
+| `core/agent_loop.py` | 341 | `AgentLoop` — the ReAct loop; context compaction; integrates correction/guardrail/doom-loop/observability policies. The one file that "deliberately evolves" as phases are added. |
 | `cli.py` | 243 | Typer CLI (`swarn` command). Sub-commands lazily import their subsystems. |
-| `dashboard.py` | 505 | FastAPI app: REST + websocket live feed + embedded single-file HTML dashboard. |
-| `mcp_server.py` | 175 | FastMCP stdio server exposing `swarn_submit_task` / `swarn_task_status` / `swarn_get_messages` / `swarn_list_tasks`. |
-| `ui.py` | 170 | Rich-based terminal rendering layer — the only module that owns console output for runs. |
-| `prompts.py` | 178 | `SYSTEM_PROMPT` for the single agent (also sliced by `roles.py` for role prompts). |
+| `web/dashboard.py` | 505 | FastAPI app: REST + websocket live feed + embedded single-file HTML dashboard. |
+| `integrations/mcp_server.py` | 175 | FastMCP stdio server exposing `swarn_submit_task` / `swarn_task_status` / `swarn_get_messages` / `swarn_list_tasks`. |
+| `utils/ui.py` | 170 | Rich-based terminal rendering layer — the only module that owns console output for runs. |
+| `messaging/prompts.py` | 178 | `SYSTEM_PROMPT` for the single agent (also sliced by `roles.py` for role prompts). |
+| `config.py` | 118 | **Single place environment variables are read** — every `SWARN_*` knob with its default. Constants for import-time settings, functions for call-time ones. |
+| `paths.py` | 43 | **Single source of truth for filesystem locations** — `WORKSPACE_DIR`, `RUNS_DIR`, `SESSIONS_DIR`, `KNOWLEDGE_DIR`, the `safe_path()` workspace guard and `safe_filename()`. All rooted at the repo, not at the importing module. |
 | `__init__.py` | 0 | Empty — `agent` is a plain package. |
 
 ### LLM layer (`agent/llm/`)
@@ -48,7 +65,7 @@ agent2/
 | `openai_client.py` | `OpenAICompatClient` — translates Anthropic-style messages/tools ⇄ OpenAI `/chat/completions`. |
 | `mock_client.py` | `MockLLMClient` — scripted responses for offline tests; helpers `text_response()`/`tool_response()`. |
 | `__init__.py` | Re-exports the public LLM API. |
-| *(root)* `llm_client.py` | Back-compat shim: Phase-1 `LLMClient` class delegating to `create_client()`. Used by `AgentLoop`. |
+| `llm_client.py` | Back-compat shim: Phase-1 `LLMClient` class delegating to `create_client()`. Used by `AgentLoop`. |
 
 ### Solution tree search (`agent/search/`)
 
@@ -63,44 +80,44 @@ agent2/
 | `report.py` | `write_report()` — `report.md` with tree, metric history, failure analysis. |
 | `__init__.py` | Re-exports `SearchConfig`, `Journal`, `Node`, `SearchResult`, `run_search`. |
 
-### Execution
+### Execution & tooling (`agent/runtime/`)
 
 | File | Purpose |
 |---|---|
-| `execution.py` | `ExecResult`; `SubprocessBackend` (cross-platform, `sys.executable`, hard timeouts); `DockerBackend` (persistent container, bind-mounted workspace, timeout→container recycle); `make_backend()` auto-detect; process-wide `get_backend()`/`close_backend()`. |
-| `sandbox.py` | Back-compat shim: `Sandbox` string-in/string-out facade over `execution.py`; `get_sandbox()`/`close_sandbox()`. Used by the `run_python`/`run_shell`/`install_package` tools. |
+| `runtime/execution.py` | `ExecResult`; `SubprocessBackend` (cross-platform, `sys.executable`, hard timeouts); `DockerBackend` (persistent container, bind-mounted workspace, timeout→container recycle); `make_backend()` auto-detect; process-wide `get_backend()`/`close_backend()`. |
+| `runtime/sandbox.py` | Back-compat shim: `Sandbox` string-in/string-out facade over `execution.py`; `get_sandbox()`/`close_sandbox()`. Used by the `run_python`/`run_shell`/`install_package` tools. |
 
-### Memory, knowledge & policies
-
-| File | Purpose |
-|---|---|
-| `memory.py` | `StepKind`, `Step`, `Session`, `SessionStore` — per-run structured traces persisted at close; `sessions/index.json`; live pub/sub hook (`subscribe_to_all_sessions`) used by the dashboard. |
-| `knowledge.py` | `KnowledgeStore` — bounded playbook (`playbook.md`, 6,000-char cap) + SQLite FTS5 run archive (`runs.db`); `context_for_task()`; `reflect_on_run()` post-run lesson extraction via forced `submit_lessons` tool. |
-| `self_correction.py` | `SelfCorrectionPolicy` — error detection (`_is_error`), classification (`ErrorKind`), hint enrichment, consecutive-error abort budget. |
-| `doom_loop.py` | `DoomLoopDetector` — result-hash-aware repetition detection (A,A,A and A,B,A,B shapes); corrective `WARNING` note. |
-| `observability.py` | `GuardrailPolicy` (prompt-injection regex scan of tool results + warning banner), `BenchmarkHarness` (canned guardrail test cases), `ObservabilityHooks` (OTel spans around LLM/tool calls), `_SpanContext`. |
-
-### Tooling & subsystems behind tools
+### Memory & knowledge (`agent/memory/`) · policies (`agent/core/`) · observability (`agent/observability/`)
 
 | File | Purpose |
 |---|---|
-| `tools.py` | **THE tool registry.** `@tool` decorator, `TOOL_REGISTRY`, `get_tool_definitions()` (with allow-list + MCP-visibility rule), `run_tool()` (never raises), `_safe_path()` workspace guard, and ~45 tool wrappers spanning Phases 1–15 plus `solve_ml_task`. |
-| `context_engine.py` | `ContextEngine` — repo-RAG: AST-aware Python chunking + sliding-window text chunking, sentence-transformers embeddings, ChromaDB persistent collection (`.chroma/`, collection "codebase"), semantic `search()`. |
-| `multimodal_rag.py` | `MultiModalIndexer` — PDF text/tables (pdfplumber), image OCR/CLIP/caption, audio transcription (whisper); reuses the *same* ChromaDB collection and embedder as `ContextEngine`. |
-| `data_pipeline.py` | `DataPipeline` — in-memory dataset registry; CSV/Excel/Parquet/SQL/cloud loaders; validation report (dtypes, nulls, dupes, z-score outliers, optional pandera). |
-| `feature_engineering.py` | `FeatureEngine` — profiling with role inference; ColumnTransformer build (impute+scale, one-hot, frequency-encode, datetime decomposition); registers `<name>_features`. |
-| `model_training.py` | `ModelTrainer` — task-type detection; candidates (linear/logistic, RF, XGBoost, LightGBM, PyTorch MLP); leaderboard; artifact store with held-out test split; Optuna HPO. |
-| `evaluation.py` | `ModelEvaluator` — detailed metrics, confusion matrix / ROC / residual plots (PNGs in `workspace/plots/`), cross-model comparison. |
-| `deployment.py` | `DeploymentPackager` — joblib/ONNX serialization, generated FastAPI `app.py` + `requirements.txt` + `Dockerfile` + `metadata.json` under `workspace/deployments/<id>/`. |
-| `finetuning.py` | `FineTuner` — dataset prep (JSONL, validation split), LoRA/QLoRA training via PEFT/Transformers, merge-and-export. |
-| `mcp_integration.py` | `MCPManager` — MCP *client*: background asyncio event-loop thread, per-server owner task + request queue, dynamic registration of remote tools into `TOOL_REGISTRY` as `mcp_<server>_<tool>`. |
+| `memory/memory.py` | `StepKind`, `Step`, `Session`, `SessionStore` — per-run structured traces persisted at close; `sessions/index.json`; live pub/sub hook (`subscribe_to_all_sessions`) used by the dashboard. |
+| `memory/knowledge.py` | `KnowledgeStore` — bounded playbook (`playbook.md`, 6,000-char cap) + SQLite FTS5 run archive (`runs.db`); `context_for_task()`; `reflect_on_run()` post-run lesson extraction via forced `submit_lessons` tool. |
+| `core/self_correction.py` | `SelfCorrectionPolicy` — error detection (`_is_error`), classification (`ErrorKind`), hint enrichment, consecutive-error abort budget. |
+| `core/doom_loop.py` | `DoomLoopDetector` — result-hash-aware repetition detection (A,A,A and A,B,A,B shapes); corrective `WARNING` note. |
+| `observability/observability.py` | `GuardrailPolicy` (prompt-injection regex scan of tool results + warning banner), `BenchmarkHarness` (canned guardrail test cases), `ObservabilityHooks` (OTel spans around LLM/tool calls), `_SpanContext`. |
 
-### Multi-agent
+### ML pipeline (`agent/ml/`) · retrieval (`agent/memory/`) · integrations (`agent/integrations/`)
 
 | File | Purpose |
 |---|---|
-| `roles.py` | Role definitions: shared prompt core extraction from `SYSTEM_PROMPT`, per-role tool allow-lists, `ROLES` registry, `get_role_config()`. |
-| `orchestrator.py` | `Orchestrator` — Planner→Coder→Reviewer→Tester pipeline with revision loop (`MAX_REVISION_CYCLES=3`), `BlackboardState`, verdict parsing (`APPROVED`/`NEEDS_CHANGES`/`PASS`/`FAIL`), markdown report. |
+| `runtime/tools.py` | **THE tool registry.** `@tool` decorator, `TOOL_REGISTRY`, `get_tool_definitions()` (with allow-list + MCP-visibility rule), `run_tool()` (never raises), `_safe_path()` workspace guard, and ~45 tool wrappers spanning Phases 1–15 plus `solve_ml_task`. |
+| `memory/context_engine.py` | `ContextEngine` — repo-RAG: AST-aware Python chunking + sliding-window text chunking, sentence-transformers embeddings, ChromaDB persistent collection (`.chroma/`, collection "codebase"), semantic `search()`. |
+| `memory/multimodal_rag.py` | `MultiModalIndexer` — PDF text/tables (pdfplumber), image OCR/CLIP/caption, audio transcription (whisper); reuses the *same* ChromaDB collection and embedder as `ContextEngine`. |
+| `ml/data_pipeline.py` | `DataPipeline` — in-memory dataset registry; CSV/Excel/Parquet/SQL/cloud loaders; validation report (dtypes, nulls, dupes, z-score outliers, optional pandera). |
+| `ml/feature_engineering.py` | `FeatureEngine` — profiling with role inference; ColumnTransformer build (impute+scale, one-hot, frequency-encode, datetime decomposition); registers `<name>_features`. |
+| `ml/model_training.py` | `ModelTrainer` — task-type detection; candidates (linear/logistic, RF, XGBoost, LightGBM, PyTorch MLP); leaderboard; artifact store with held-out test split; Optuna HPO. |
+| `ml/evaluation.py` | `ModelEvaluator` — detailed metrics, confusion matrix / ROC / residual plots (PNGs in `workspace/plots/`), cross-model comparison. |
+| `runtime/deployment.py` | `DeploymentPackager` — joblib/ONNX serialization, generated FastAPI `app.py` + `requirements.txt` + `Dockerfile` + `metadata.json` under `workspace/deployments/<id>/`. |
+| `llm/finetuning.py` | `FineTuner` — dataset prep (JSONL, validation split), LoRA/QLoRA training via PEFT/Transformers, merge-and-export. |
+| `integrations/mcp_integration.py` | `MCPManager` — MCP *client*: background asyncio event-loop thread, per-server owner task + request queue, dynamic registration of remote tools into `TOOL_REGISTRY` as `mcp_<server>_<tool>`. |
+
+### Multi-agent (`agent/core/`)
+
+| File | Purpose |
+|---|---|
+| `core/roles.py` | Role definitions: shared prompt core extraction from `SYSTEM_PROMPT`, per-role tool allow-lists, `ROLES` registry, `get_role_config()`. |
+| `core/orchestrator.py` | `Orchestrator` — Planner→Coder→Reviewer→Tester pipeline with revision loop (`MAX_REVISION_CYCLES=3`), `BlackboardState`, verdict parsing (`APPROVED`/`NEEDS_CHANGES`/`PASS`/`FAIL`), markdown report. |
 
 ## `tests/`
 
@@ -124,8 +141,8 @@ graph TD
     subgraph "Entry points"
         MAIN[main.py REPL]
         CLI[agent/cli.py swarn]
-        DASH[agent/dashboard.py]
-        MCPS[agent/mcp_server.py]
+        DASH[agent/web/dashboard.py]
+        MCPS[agent/integrations/mcp_server.py]
     end
     subgraph "Agent cores"
         LOOP[agent_loop.py ReAct]

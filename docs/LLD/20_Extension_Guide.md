@@ -4,7 +4,7 @@ How to extend each subsystem, following the conventions the codebase already use
 
 ## Add a new tool (the primary extension point)
 
-1. In `agent/tools.py` (or a new module imported by it):
+1. In `agent/runtime/tools.py` (or a new module imported by it):
 
 ```python
 @tool(
@@ -34,10 +34,10 @@ def my_tool(arg: str) -> str:
 
 ## Add a new role to the team pipeline
 
-1. `agent/roles.py`: define `<ROLE>_TOOLS` (allow-list; typos are silently dropped, so
+1. `agent/core/roles.py`: define `<ROLE>_TOOLS` (allow-list; typos are silently dropped, so
    double-check names) and `<ROLE>_PROMPT = _SHARED_CORE + "━━━ Your role: … ━━━ …"`,
    then add the entry to `ROLES`.
-2. `agent/orchestrator.py`: wire the role into `run()`'s pipeline — role sequencing is
+2. `agent/core/orchestrator.py`: wire the role into `run()`'s pipeline — role sequencing is
    explicit code, not configuration. Follow the existing shape: build task string from
    blackboard summaries, `self._run_role("myrole", task, state)`, branch on
    outcome/summary.
@@ -65,7 +65,7 @@ banner in `agent/llm/router.py`.
 
 ## Add a new execution backend
 
-1. `agent/execution.py`: new class with `name`, `exec_python(code, timeout) -> ExecResult`,
+1. `agent/runtime/execution.py`: new class with `name`, `exec_python(code, timeout) -> ExecResult`,
    `exec_shell(command, timeout) -> ExecResult`, `close()`.
 2. Extend the `ExecutionBackend` union and `make_backend()` selection (plus a
    `SWARN_SANDBOX` value for forcing).
@@ -101,13 +101,13 @@ optional constructor arg, `None` = off.
 
 ## Add a dashboard endpoint
 
-`agent/dashboard.py` — plain FastAPI. Read-only data should come from disk
+`agent/web/dashboard.py` — plain FastAPI. Read-only data should come from disk
 (`sessions/`, `runs/`, `knowledge/`) or `get_session_store()`; anything triggering agent
 work must run in an executor to keep the loop responsive (copy `/api/run`).
 
 ## Add an MCP-exposed capability
 
-`agent/mcp_server.py` — add a `@mcp.tool()` function. For long work, follow the
+`agent/integrations/mcp_server.py` — add a `@mcp.tool()` function. For long work, follow the
 `_TaskRecord` + daemon-thread pattern so the tool returns immediately and is pollable.
 
 ## Add configuration

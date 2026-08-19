@@ -20,7 +20,7 @@ programmatic Python API.
 
 Also reachable without installation: `python -m agent.cli <command>`.
 
-## 2. Dashboard HTTP/WS API (`agent/dashboard.py`)
+## 2. Dashboard HTTP/WS API (`agent/web/dashboard.py`)
 
 No authentication. Binds 127.0.0.1 by default.
 
@@ -38,7 +38,7 @@ No authentication. Binds 127.0.0.1 by default.
 The embedded page polls `/api/sessions` (5s) and `/api/runs` (7s), auto-reconnects the
 websocket (2s), and posts to `/api/run` from a textarea.
 
-## 3. MCP server tools (`agent/mcp_server.py`)
+## 3. MCP server tools (`agent/integrations/mcp_server.py`)
 
 Exposed over stdio via FastMCP as server name `swarn`:
 
@@ -57,9 +57,9 @@ loop's stdout via `redirect_stdout` and keeps the last 200 lines. Solve mode set
 
 ```python
 # ReAct agent
-from agent.agent_loop import AgentLoop
-from agent.self_correction import SelfCorrectionPolicy
-from agent.observability import GuardrailPolicy
+from agent.core.agent_loop import AgentLoop
+from agent.core.self_correction import SelfCorrectionPolicy
+from agent.observability.observability import GuardrailPolicy
 result = AgentLoop(correction_policy=SelfCorrectionPolicy(),
                    guardrail_policy=GuardrailPolicy()).run("task")
 # → {"outcome": "complete|no_tool_use|max_corrections|max_iterations",
@@ -74,12 +74,12 @@ res = run_search("Predict y. Metric: AUC.", data_dir="data/",
 #   res.solution_path, res.report_path
 
 # Multi-agent
-from agent.orchestrator import Orchestrator
+from agent.core.orchestrator import Orchestrator
 out = Orchestrator().run("task")
 # → {"final_outcome": str, "state": BlackboardState, "report_markdown": str}
 
 # Tool registry (for embedding/hosting)
-from agent.tools import get_tool_definitions, run_tool, TOOL_REGISTRY
+from agent.runtime.tools import get_tool_definitions, run_tool, TOOL_REGISTRY
 
 # LLM layer
 from agent.llm import create_client

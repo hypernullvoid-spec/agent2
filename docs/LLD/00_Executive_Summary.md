@@ -7,7 +7,7 @@ autonomous AI engineering agent focused on machine-learning work. It is a single
 package (`agent/`, with subpackages `agent.llm` and `agent.search`) that offers **two
 complementary agent paradigms** plus a multi-agent coordination layer:
 
-1. **A ReAct tool-calling loop** (`agent/agent_loop.py`) — the LLM is given a registry of
+1. **A ReAct tool-calling loop** (`agent/core/agent_loop.py`) — the LLM is given a registry of
    ~45 tools (file I/O, sandboxed code execution, repo-RAG semantic search, a full tabular-ML
    pipeline from ingestion to deployment packaging, multimodal indexing, LoRA fine-tuning,
    MCP client integration) and iterates *think → call tool → observe result* until it calls
@@ -20,7 +20,7 @@ complementary agent paradigms** plus a multi-agent coordination layer:
    step/time/token budget is exhausted. Every attempt is a node in a persisted tree
    (`runs/<id>/journal.json`), enabling crash-safe **resume**.
 
-3. **A fixed multi-agent pipeline** (`agent/orchestrator.py` + `agent/roles.py`) —
+3. **A fixed multi-agent pipeline** (`agent/core/orchestrator.py` + `agent/core/roles.py`) —
    Planner → Coder → Reviewer → Tester, where each role is an `AgentLoop` instance with a
    role-specific system prompt and a restricted tool allow-list, coordinated through a small
    "blackboard" of role summaries.
@@ -33,8 +33,8 @@ Four entry points (see [03_Startup_Sequence.md](03_Startup_Sequence.md)):
 |---|---|---|
 | `python main.py` | `main.py` | Interactive REPL (single agent + `team` command) |
 | `swarn <cmd>` | `agent/cli.py` | One-shot CLI: `run`, `team`, `solve`, `sessions`, `recall`, `index`, `playbook`, `serve`, `mcp-serve`, `guardrail-benchmark` |
-| `swarn serve` | `agent/dashboard.py` | FastAPI web dashboard: live websocket step feed, session/search-run browsing, playbook view |
-| `swarn mcp-serve` | `agent/mcp_server.py` | MCP server exposing the platform (submit/status/messages/list) to Claude Code, Cursor, etc. |
+| `swarn serve` | `agent/web/dashboard.py` | FastAPI web dashboard: live websocket step feed, session/search-run browsing, playbook view |
+| `swarn mcp-serve` | `agent/integrations/mcp_server.py` | MCP server exposing the platform (submit/status/messages/list) to Claude Code, Cursor, etc. |
 
 ## Key design decisions (verified in code)
 
@@ -44,17 +44,17 @@ Four entry points (see [03_Startup_Sequence.md](03_Startup_Sequence.md)):
   model parameters are display-only. The single exception is the `mock:*` spec, which returns
   a scripted `MockLLMClient` used by the offline test suite.
 - **The tool registry is the only thing that grows.** New capability = new `@tool`-decorated
-  function in `agent/tools.py` (or dynamic MCP registration). `AgentLoop`'s control flow is
+  function in `agent/runtime/tools.py` (or dynamic MCP registration). `AgentLoop`'s control flow is
   never modified for new capabilities.
 - **Errors are strings, never exceptions.** `run_tool()` catches everything and returns
   `"Error ..."` strings; the self-correction policy, guardrail scanner, and doom-loop
   detector then *enrich* those strings so the model can react.
-- **Docker-optional execution.** `agent/execution.py` auto-detects Docker; falls back to a
+- **Docker-optional execution.** `agent/runtime/execution.py` auto-detects Docker; falls back to a
   cross-platform subprocess backend with hard timeouts. Both return a structured `ExecResult`.
 - **Per-process singletons.** Nearly every subsystem (session store, data pipeline, feature
   engine, model trainer, evaluator, packager, context engine, MCP manager, sandbox) is a
   lazily-created module-level singleton (`get_xxx()` accessor).
-- **Self-improvement across runs.** `agent/knowledge.py` maintains a hard-capped playbook of
+- **Self-improvement across runs.** `agent/memory/knowledge.py` maintains a hard-capped playbook of
   distilled lessons (post-run LLM reflection) and an SQLite FTS5 archive of past runs; both
   are injected into future search prompts.
 - **Safety layers on the ReAct loop.** Self-correction hints + abort budget

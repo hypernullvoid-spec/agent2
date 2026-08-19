@@ -41,12 +41,9 @@ load_dotenv()
 # ── deployed model configuration (single source of truth) ────────────────
 # TODO(production): replace these test-deployment defaults with the
 # production deployed model endpoint (see banner above).
-DEPLOYED_MODEL_NAME = os.environ.get("SWARN_DEPLOYED_MODEL", "qwen3.5-9b")
-DEPLOYED_BASE_URL = os.environ.get(
-    "SWARN_DEPLOYED_BASE_URL",
-    "https://secretaryalumniaffairs-mmm--qwen35-9b-serve.modal.run/v1",  # TEST: Qwen on Modal
+from agent.config import (
+    DEPLOYED_MODEL as DEPLOYED_MODEL_NAME, DEPLOYED_BASE_URL, DEPLOYED_API_KEY,
 )
-DEPLOYED_API_KEY = os.environ.get("SWARN_DEPLOYED_API_KEY", "dummy")
 
 # Kept as the canonical default-model string other modules import for
 # display/logging defaults (journal, dashboard, CLI help).

@@ -60,7 +60,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from agent.context_engine import get_context_engine, ContextEngine
+from agent.memory.context_engine import get_context_engine, ContextEngine
 
 MAX_PDF_BYTES   = 50_000_000   # 50 MB — large scanned PDFs can run OCR-equivalent extraction for a long time
 MAX_IMAGE_BYTES = 20_000_000

@@ -71,9 +71,7 @@ import os
 
 # ─── constants ────────────────────────────────────────────────────────────────
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
+from agent.paths import WORKSPACE_DIR, safe_path as _safe_path
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 
@@ -168,12 +166,7 @@ def run_tool(name: str, tool_input: dict) -> str:
 
 # ─── path guard ───────────────────────────────────────────────────────────────
 
-def _safe_path(path: str) -> str:
-    """Resolve a relative path inside WORKSPACE_DIR. Rejects path traversal."""
-    full = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
-    if not (full == WORKSPACE_DIR or full.startswith(WORKSPACE_DIR + os.sep)):
-        raise ValueError(f"Path '{path}' escapes the workspace directory")
-    return full
+# _safe_path lives in agent/paths.py — imported above under its original name.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -282,7 +275,7 @@ def finish_task(summary: str) -> str:
     },
 )
 def run_python(code: str) -> str:
-    from agent.sandbox import get_sandbox
+    from agent.runtime.sandbox import get_sandbox
     return get_sandbox().exec_python(code)
 
 
@@ -305,7 +298,7 @@ def run_python(code: str) -> str:
     },
 )
 def run_shell(command: str) -> str:
-    from agent.sandbox import get_sandbox
+    from agent.runtime.sandbox import get_sandbox
     return get_sandbox().exec_shell(command)
 
 
@@ -327,7 +320,7 @@ def run_shell(command: str) -> str:
     },
 )
 def install_package(packages: str) -> str:
-    from agent.sandbox import get_sandbox
+    from agent.runtime.sandbox import get_sandbox
     cmd = f"pip install {packages} --quiet"
     result = get_sandbox().exec_shell(cmd)
     # pip install success produces no stdout with --quiet; check stderr for errors
@@ -364,7 +357,7 @@ def install_package(packages: str) -> str:
     },
 )
 def index_project(directory: str) -> str:
-    from agent.context_engine import get_context_engine
+    from agent.memory.context_engine import get_context_engine
 
     # Resolve relative paths against the workspace
     if not os.path.isabs(directory):
@@ -398,7 +391,7 @@ def index_project(directory: str) -> str:
     },
 )
 def search_codebase(query: str, n_results: int = 6) -> str:
-    from agent.context_engine import get_context_engine
+    from agent.memory.context_engine import get_context_engine
     return get_context_engine().search(query, n_results=min(n_results, 20))
 
 
@@ -426,7 +419,7 @@ def search_codebase(query: str, n_results: int = 6) -> str:
     },
 )
 def list_sessions(n: int = 10) -> str:
-    from agent.memory import get_session_store
+    from agent.memory.memory import get_session_store
     return get_session_store().list_sessions(n=n)
 
 
@@ -449,7 +442,7 @@ def list_sessions(n: int = 10) -> str:
     },
 )
 def recall_session(session_id: str) -> str:
-    from agent.memory import get_session_store
+    from agent.memory.memory import get_session_store
     return get_session_store().recall_as_text(session_id)
 
 
@@ -474,7 +467,7 @@ def recall_session(session_id: str) -> str:
     },
 )
 def load_csv(path: str, name: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().load_csv(path, name)
 
 
@@ -496,7 +489,7 @@ def load_csv(path: str, name: str) -> str:
     },
 )
 def load_excel(path: str, name: str, sheet_name: str = None) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     kwargs = {"sheet_name": sheet_name} if sheet_name is not None else {}
     return get_data_pipeline().load_excel(path, name, **kwargs)
 
@@ -513,7 +506,7 @@ def load_excel(path: str, name: str, sheet_name: str = None) -> str:
     },
 )
 def load_parquet(path: str, name: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().load_parquet(path, name)
 
 
@@ -534,7 +527,7 @@ def load_parquet(path: str, name: str) -> str:
     },
 )
 def load_sql(connection_string: str, query: str, name: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().load_sql(connection_string, query, name)
 
 
@@ -554,7 +547,7 @@ def load_sql(connection_string: str, query: str, name: str) -> str:
     },
 )
 def load_cloud_data(uri: str, name: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().load_cloud_storage(uri, name)
 
 
@@ -574,7 +567,7 @@ def load_cloud_data(uri: str, name: str) -> str:
     },
 )
 def validate_dataset(name: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().validate_dataset(name)
 
 
@@ -590,7 +583,7 @@ def validate_dataset(name: str) -> str:
     },
 )
 def preview_dataset(name: str, n: int = 10) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().preview_dataset(name, n=n)
 
 
@@ -599,7 +592,7 @@ def preview_dataset(name: str, n: int = 10) -> str:
     schema={"type": "object", "properties": {}, "required": []},
 )
 def list_datasets() -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().list_datasets()
 
 
@@ -618,7 +611,7 @@ def list_datasets() -> str:
     },
 )
 def save_dataset(name: str, path: str) -> str:
-    from agent.data_pipeline import get_data_pipeline
+    from agent.ml.data_pipeline import get_data_pipeline
     return get_data_pipeline().save_dataset(name, path)
 
 
@@ -645,7 +638,7 @@ def save_dataset(name: str, path: str) -> str:
     },
 )
 def profile_features(name: str, target_col: str = None) -> str:
-    from agent.feature_engineering import get_feature_engine
+    from agent.ml.feature_engineering import get_feature_engine
     return get_feature_engine().profile_dataset(name, target_col=target_col)
 
 
@@ -675,7 +668,7 @@ def profile_features(name: str, target_col: str = None) -> str:
     },
 )
 def engineer_features(name: str, target_col: str = None, drop_cols: list = None, output_name: str = None) -> str:
-    from agent.feature_engineering import get_feature_engine
+    from agent.ml.feature_engineering import get_feature_engine
     return get_feature_engine().engineer_features(
         name, target_col=target_col, drop_cols=drop_cols, output_name=output_name
     )
@@ -713,7 +706,7 @@ def engineer_features(name: str, target_col: str = None, drop_cols: list = None,
     },
 )
 def train_models(name: str, target_col: str, candidates: list = None, test_size: float = 0.2) -> str:
-    from agent.model_training import get_model_trainer
+    from agent.ml.model_training import get_model_trainer
     return get_model_trainer().train_models(name, target_col, candidates=candidates, test_size=test_size)
 
 
@@ -741,7 +734,7 @@ def train_models(name: str, target_col: str, candidates: list = None, test_size:
     },
 )
 def tune_hyperparameters(name: str, target_col: str, candidate: str = "xgboost", n_trials: int = 25) -> str:
-    from agent.model_training import get_model_trainer
+    from agent.ml.model_training import get_model_trainer
     return get_model_trainer().tune_hyperparameters(name, target_col, candidate=candidate, n_trials=n_trials)
 
 
@@ -750,7 +743,7 @@ def tune_hyperparameters(name: str, target_col: str, candidate: str = "xgboost",
     schema={"type": "object", "properties": {}, "required": []},
 )
 def list_trained_models() -> str:
-    from agent.model_training import get_model_trainer
+    from agent.ml.model_training import get_model_trainer
     return get_model_trainer().list_trained_models()
 
 
@@ -778,7 +771,7 @@ def list_trained_models() -> str:
     },
 )
 def evaluate_model(artifact_id: str) -> str:
-    from agent.evaluation import get_model_evaluator
+    from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().evaluate_model(artifact_id)
 
 
@@ -796,7 +789,7 @@ def evaluate_model(artifact_id: str) -> str:
     },
 )
 def plot_confusion_matrix(artifact_id: str) -> str:
-    from agent.evaluation import get_model_evaluator
+    from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().plot_confusion_matrix(artifact_id)
 
 
@@ -814,7 +807,7 @@ def plot_confusion_matrix(artifact_id: str) -> str:
     },
 )
 def plot_roc_curve(artifact_id: str) -> str:
-    from agent.evaluation import get_model_evaluator
+    from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().plot_roc_curve(artifact_id)
 
 
@@ -834,7 +827,7 @@ def plot_roc_curve(artifact_id: str) -> str:
     },
 )
 def plot_residuals(artifact_id: str) -> str:
-    from agent.evaluation import get_model_evaluator
+    from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().plot_residuals(artifact_id)
 
 
@@ -848,7 +841,7 @@ def plot_residuals(artifact_id: str) -> str:
     schema={"type": "object", "properties": {}, "required": []},
 )
 def compare_models() -> str:
-    from agent.evaluation import get_model_evaluator
+    from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().compare_models()
 
 
@@ -882,7 +875,7 @@ def compare_models() -> str:
     },
 )
 def package_model(artifact_id: str, export_format: str = "pickle", api_title: str = None) -> str:
-    from agent.deployment import get_deployment_packager
+    from agent.runtime.deployment import get_deployment_packager
     return get_deployment_packager().package_model(artifact_id, export_format=export_format, api_title=api_title)
 
 
@@ -919,7 +912,7 @@ def package_model(artifact_id: str, export_format: str = "pickle", api_title: st
     },
 )
 def connect_mcp_server(server_name: str, command: str, args: list = None) -> str:
-    from agent.mcp_integration import get_mcp_manager
+    from agent.integrations.mcp_integration import get_mcp_manager
     return get_mcp_manager().connect_server(server_name, command, args=args)
 
 
@@ -928,7 +921,7 @@ def connect_mcp_server(server_name: str, command: str, args: list = None) -> str
     schema={"type": "object", "properties": {}, "required": []},
 )
 def list_mcp_servers() -> str:
-    from agent.mcp_integration import get_mcp_manager
+    from agent.integrations.mcp_integration import get_mcp_manager
     return get_mcp_manager().list_mcp_servers()
 
 
@@ -947,7 +940,7 @@ def list_mcp_servers() -> str:
     },
 )
 def list_mcp_tools(server_name: str = None) -> str:
-    from agent.mcp_integration import get_mcp_manager
+    from agent.integrations.mcp_integration import get_mcp_manager
     return get_mcp_manager().list_mcp_tools(server_name=server_name)
 
 
@@ -966,7 +959,7 @@ def list_mcp_tools(server_name: str = None) -> str:
     },
 )
 def disconnect_mcp_server(server_name: str) -> str:
-    from agent.mcp_integration import get_mcp_manager
+    from agent.integrations.mcp_integration import get_mcp_manager
     return get_mcp_manager().disconnect_server(server_name)
 
 
@@ -991,7 +984,7 @@ def disconnect_mcp_server(server_name: str) -> str:
     },
 )
 def index_pdf(path: str) -> str:
-    from agent.multimodal_rag import get_multimodal_indexer
+    from agent.memory.multimodal_rag import get_multimodal_indexer
     if not os.path.isabs(path):
         path = os.path.join(WORKSPACE_DIR, path)
     return get_multimodal_indexer().index_pdf(path)
@@ -1016,7 +1009,7 @@ def index_pdf(path: str) -> str:
     },
 )
 def index_image(path: str, caption: str = None) -> str:
-    from agent.multimodal_rag import get_multimodal_indexer
+    from agent.memory.multimodal_rag import get_multimodal_indexer
     if not os.path.isabs(path):
         path = os.path.join(WORKSPACE_DIR, path)
     return get_multimodal_indexer().index_image(path, caption=caption)
@@ -1044,7 +1037,7 @@ def index_image(path: str, caption: str = None) -> str:
     },
 )
 def index_audio(path: str, model_size: str = "base") -> str:
-    from agent.multimodal_rag import get_multimodal_indexer
+    from agent.memory.multimodal_rag import get_multimodal_indexer
     if not os.path.isabs(path):
         path = os.path.join(WORKSPACE_DIR, path)
     return get_multimodal_indexer().index_audio(path, model_size=model_size)
@@ -1088,7 +1081,7 @@ def index_audio(path: str, model_size: str = "base") -> str:
     },
 )
 def prepare_finetune_dataset(examples: list, run_id: str, validation_split: float = 0.1) -> str:
-    from agent.finetuning import get_fine_tuner
+    from agent.llm.finetuning import get_fine_tuner
     return get_fine_tuner().prepare_dataset(examples, run_id, validation_split=validation_split)
 
 
@@ -1119,7 +1112,7 @@ def fine_tune(
     run_id: str, base_model_id: str, use_qlora: bool = False,
     num_epochs: int = 3, learning_rate: float = 2e-4, lora_r: int = 8,
 ) -> str:
-    from agent.finetuning import get_fine_tuner
+    from agent.llm.finetuning import get_fine_tuner
     return get_fine_tuner().fine_tune(
         run_id, base_model_id, use_qlora=use_qlora,
         num_epochs=num_epochs, learning_rate=learning_rate, lora_r=lora_r,
@@ -1144,7 +1137,7 @@ def fine_tune(
     },
 )
 def merge_and_export_model(run_id: str, export_mode: str = "merged") -> str:
-    from agent.finetuning import get_fine_tuner
+    from agent.llm.finetuning import get_fine_tuner
     return get_fine_tuner().merge_and_export(run_id, export_mode=export_mode)
 
 
@@ -1153,7 +1146,7 @@ def merge_and_export_model(run_id: str, export_mode: str = "merged") -> str:
     schema={"type": "object", "properties": {}, "required": []},
 )
 def list_finetune_runs() -> str:
-    from agent.finetuning import get_fine_tuner
+    from agent.llm.finetuning import get_fine_tuner
     return get_fine_tuner().list_finetune_runs()
 
 
@@ -1173,7 +1166,7 @@ def list_finetune_runs() -> str:
     schema={"type": "object", "properties": {}, "required": []},
 )
 def run_guardrail_benchmark() -> str:
-    from agent.observability import get_benchmark_harness
+    from agent.observability.observability import get_benchmark_harness
     return get_benchmark_harness().run()
 
 
@@ -1187,7 +1180,7 @@ def run_guardrail_benchmark() -> str:
     schema={"type": "object", "properties": {}, "required": []},
 )
 def get_guardrail_findings() -> str:
-    from agent.observability import get_guardrail_policy
+    from agent.observability.observability import get_guardrail_policy
     return get_guardrail_policy().summary()
 
 
