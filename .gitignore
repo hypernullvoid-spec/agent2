@@ -53,6 +53,9 @@ dmypy.json
 .pyre/
 .pytype/
 .ruff_cache/
+.pyright/
+.pylint.d/
+.ropeproject/
 
 # ── Agent runtime artifacts ─────────────────────────────────────────
 # runs/ = per-run journals, sessions/ = memory.py SESSIONS_DIR,
@@ -67,6 +70,15 @@ dmypy.json
 /workspace/
 /knowledge/
 agent/knowledge/
+# stray runtime dirs created when a tool resolves a relative path from
+# inside the package instead of the repo root (paths.py owns the real ones)
+agent/workspace/
+agent/runs/
+agent/sessions/
+# data_bridge scratch copies of uploaded/derived datasets
+.swarn_datasets/
+# dashboard uploads land in workspace/, but keep a top-level one ignored too
+/uploads/
 
 # ── Databases ───────────────────────────────────────────────────────
 *.db
@@ -76,6 +88,14 @@ agent/knowledge/
 # ── ML models / vector store ────────────────────────────────────────
 .chroma/
 chroma/
+mlruns/
+wandb/
+catboost_info/
+runs/tensorboard/
+optuna*.db
+*.h5
+*.tflite
+*.gguf
 *.chroma
 /models/
 *.bin
@@ -96,6 +116,7 @@ checkpoints/
 # ── IDE / editor ────────────────────────────────────────────────────
 .idea/
 .vscode/
+*.code-workspace
 *.swp
 *.swo
 *~
@@ -104,6 +125,7 @@ checkpoints/
 .DS_Store
 Thumbs.db
 desktop.ini
+*.lnk
 
 # ── Office lock files (docs/*.docx, *.pptx are tracked) ─────────────
 ~$*.docx
@@ -115,6 +137,12 @@ desktop.ini
 logs/
 *.tmp
 sync-test.txt
+
+# ── Packaging / dependency tooling (uv.lock is tracked on purpose) ──
+.uv/
+pip-wheel-metadata/
+.pdm-python
+node_modules/
 
 # ── Claude Code (keep shared settings, drop local overrides) ────────
 .claude/settings.local.json
@@ -131,3 +159,11 @@ data-analyst/uploads/
 *_evidence.png
 *_annotated.png
 /Swaraj_spot-*.json
+
+# ── Agent-generated reports / submissions at the repo root ──────────
+# Written by `swarn run`; the few checked-in examples are already tracked
+# and stay so — these patterns only stop new ones piling up.
+/*_analysis_report.txt
+/*_report.md
+/submission_*.csv
+/swarn_run_*.json
