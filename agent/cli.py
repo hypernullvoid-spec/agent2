@@ -1,32 +1,58 @@
 """
-Phase 16: CLI (Typer)
+The Swarn CLI: interactive REPL and headless one-shot — Rich terminal UI.
 
-A proper standalone command-line front end, alongside (not replacing)
-main.py's interactive REPL. The REPL is great for an ongoing back-and-
-forth session; this CLI is for the other common case — a single
-one-off command run from a shell script, a CI job, or just muscle
-memory ("run X and exit", not "open a prompt and type X").
+This is the single front end for the whole platform. It lives inside the
+package rather than at the repo root because the console-script entry point
+has to be importable from an installed copy: a root-level main.py resolves
+fine from a source checkout and fails with ModuleNotFoundError once
+installed, since it is not part of the `agent` package. Run it as `swarn`
+(installed) or `python -m agent.cli` (checkout).
 
-Why this is a separate entry point from main.py
-─────────────────────────────────────────────────────
-main.py's REPL loop assumes an interactive terminal: it reads from
-stdin in a `while True`, prints a banner, and only exits on 'exit' or
-EOF. None of that fits a one-shot `swarn run "task"` invocation from a
-script, where you want: run, print the result, exit with a meaningful
-status code. Typer (built on Click) is the natural fit for that shape —
-each subcommand below is a normal Python function with type-annotated
-parameters, and Typer derives the CLI's argument parsing, help text,
-and `--option` flags directly from the signature.
+Two modes
+──────────
+    swarn                        # interactive: a conversation, with tools
+                                 # gated behind approval prompts
+    swarn "build me a model"     # headless: one prompt, auto-approved, exits
+                                 # with a meaningful status code
+    swarn run "..."              # the same headless run, stated explicitly
+    swarn team "..."             # headless through the multi-agent pipeline
+    swarn --help                 # everything else
+
+A bare prompt works because main() rewrites argv: the first positional
+argument that isn't a known subcommand is treated as `run <prompt>`. Click
+groups cannot carry their own positional argument without swallowing the
+subcommand name, so the rewrite happens before Typer sees argv.
+
+Interactive vs headless, concretely
+────────────────────────────────────
+  • Approval — interactive prompts before anything side-effecting (see
+    agent/core/approval_policy.py); headless auto-approves, which is what
+    makes it usable from a script or a CI job. `/yolo` turns interactive
+    into auto-approve for the rest of the session.
+  • Memory — interactive carries message history across turns, so "now add
+    tests for that" resolves against the previous turn. Headless is one
+    shot: it starts from an empty conversation every time.
+  • Output — interactive prints the themed banner and streams; headless
+    prints structured panels and a final summary table, which is what you
+    want in a log file.
+
+Themes
+───────
+Two interchangeable terminal skins ship in agent/utils/: the green-on-black
+CRT `classic` (default) and `lain`. Pick one with SWARN_THEME=lain. Nothing
+in this module knows which is active — it imports from the
+agent.utils.terminal_display facade, which forwards to whichever is chosen.
 
 Commands
 ──────────
   swarn run "<task>" [docs...]    — universal entry point: single agent,
                                      or the document fast path when the
                                      task is just a question about a file
-  swarn team "<task>"             — Phase 11 multi-agent pipeline, one-shot
-  swarn sessions [--limit N]       — Phase 5 session history
+  swarn team "<task>"             — multi-agent pipeline, one-shot
+  swarn solve "<task>" --data D   — AIDE-style ML solution tree search
+  swarn sessions [--limit N]       — session history
   swarn recall <session_id>         — full tool-call log of one past session
-  swarn index <path>                 — Phase 3 repo indexing
+  swarn index <path>                 — repo indexing
   swarn extract-pdf <path>            — PDF → structured JSON (no indexing)
   swarn to-csv <path>                  — PDF's tables → CSV file(s) on disk
   swarn doc-inspect <path>             — PDF/image → fields + bounding boxes
@@ -36,31 +62,73 @@ Commands
                                           with the evidence boxed and cited
                                           (the explicit form of what
                                            `swarn run` routes to)
-  swarn serve [--port N]              — Phase 16's dashboard (see dashboard.py)
-  swarn guardrail-benchmark            — Phase 15's canned guardrail test suite
+  swarn config [--path]               — show the persisted CLI configuration
+  swarn serve [--port N]              — the web dashboard (see dashboard.py)
+  swarn guardrail-benchmark            — canned guardrail test suite
 
 Exit codes
 ────────────
 `run`/`team` exit 0 on outcome="complete", 1 otherwise — so
 `swarn run "..." && echo "ok"` in a shell script behaves the way you'd
-expect a build/test step to behave.
+expect a build/test step to behave. The document fast path additionally
+exits 2 when the question is well-formed but the document cannot answer it:
+that is a legitimate outcome, not a failure, and a script should be able to
+tell the two apart.
 """
 
+import asyncio
+import atexit
 import json
+import os
+import shutil
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
+import click
 import typer
+from dotenv import load_dotenv
 
+from agent.config import (
+    CLIConfig,
+    DEFAULT_CONFIG_PATH,
+    load_config,
+    save_config,
+)
 # Deployed model name — all calls hard-route to the endpoint configured in
 # agent/llm/router.py, so --model flags below are display/log only.
-from agent.llm import DEFAULT_MODEL
+from agent.llm import DEFAULT_MODEL, DEPLOYED_BASE_URL, DEPLOYED_MODEL_NAME
+from agent.utils.terminal_display import (
+    get_console,
+    get_headless_display,
+    indent,
+    print_approval_header,
+    print_approval_item,
+    print_banner,
+    print_compacted,
+    print_help,
+    print_init_done,
+    print_interrupted,
+    print_plan,
+    print_yolo_approve,
+    read_user_input,
+    reset_headless_display,
+    set_stream_enabled,
+)
+
+console = get_console()
+
+VALID_EFFORT_LEVELS = ("low", "medium", "high")
 
 app = typer.Typer(
     name="swarn",
-    help="Swarn — your autonomous AI engineering agent (CLI front end).",
+    help='Swarn — autonomous AI engineering agent. Run bare for interactive '
+         'mode, or `swarn "task"` for a headless one-shot.',
     add_completion=False,
+    no_args_is_help=False,
+    invoke_without_command=True,
 )
 
 
@@ -172,17 +240,688 @@ def _print_grounded_tool_result(tool_name: str, tool_input: dict, raw_result: st
             typer.echo(f"    -> {data['annotated_image_path']}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# RUNTIME WIRING — shared by both modes
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@contextmanager
+def _cancellable():
+    """Yield a cancel event that Ctrl+C sets, so streaming output can stop
+    cleanly instead of unwinding through a half-written ANSI style run."""
+    cancel_event = asyncio.Event()
+    try:
+        yield cancel_event
+    except KeyboardInterrupt:
+        cancel_event.set()
+        raise
+
+
+def _apply_runtime_options(
+    config: CLIConfig,
+    model: Optional[str],
+    max_iterations: Optional[int],
+    no_stream: bool,
+    sandbox_tools: bool,
+) -> CLIConfig:
+    """Overlay this invocation's flags onto the persisted config.
+
+    Flags win for the current process but are NOT written back to disk — only
+    the interactive slash commands persist. That keeps a one-off `--model X`
+    from silently redefining the default for every later run.
+    """
+    if model:
+        config.model_name = model
+    if max_iterations:
+        config.max_iterations = max_iterations
+    if no_stream:
+        set_stream_enabled(False)
+    if sandbox_tools or config.tool_runtime == "sandbox":
+        config.tool_runtime = "sandbox"
+        # execution.py reads this when it builds the backend, so it has to be
+        # set before the first tool call constructs one.
+        os.environ["SWARN_SANDBOX"] = "docker"
+    return config
+
+
+def _tool_runtime_label(config: CLIConfig) -> str:
+    return "docker sandbox" if config.tool_runtime == "sandbox" else "local filesystem"
+
+
+def _make_observability_hooks():
+    """Tracing is opt-in: span export adds console noise most runs don't want,
+    and most environments have no collector to send spans to anyway."""
+    from agent import config as agent_config
+
+    if not agent_config.tracing_enabled():
+        return None
+    from agent.observability.observability import ObservabilityHooks
+
+    endpoint = agent_config.otel_endpoint()
+    console.print(
+        f"[info]OpenTelemetry tracing enabled (exporting to {endpoint or 'console'}).[/info]\n"
+    )
+    return ObservabilityHooks(exporter_endpoint=endpoint)
+
+
+def _create_agent(
+    config: CLIConfig,
+    observability_hooks=None,
+    approval_callback=None,
+    keep_history: bool = False,
+    single_session: bool = False,
+    on_tool_result=None,
+):
+    """Create an AgentLoop wired to the current config and mode.
+
+    Imported lazily, like everything else that touches the model stack:
+    `swarn --help` should not have to construct an LLM client just to print
+    usage text.
+    """
+    from agent.core.agent_loop import AgentLoop
+    from agent.core.self_correction import SelfCorrectionPolicy
+    from agent.observability.observability import GuardrailPolicy
+
+    return AgentLoop(
+        model=config.model_name,
+        correction_policy=SelfCorrectionPolicy(max_consecutive=3),
+        guardrail_policy=GuardrailPolicy(),
+        observability_hooks=observability_hooks,
+        approval_callback=approval_callback,
+        max_iterations=config.max_iterations,
+        keep_history=keep_history,
+        single_session=single_session,
+        on_tool_result=on_tool_result or _print_grounded_tool_result,
+    )
+
+
+def _report_run_failure(exc: BaseException) -> None:
+    """Turn an exception into one readable line instead of a traceback.
+
+    A rate limit is called out specifically because it is the single most
+    common failure and the least self-explanatory: "429" alone tells a user
+    nothing about what to do next.
+    """
+    from agent.llm.base import LLMError
+    from agent.utils import ui
+
+    ui.console.print()
+    if isinstance(exc, LLMError):
+        message = str(exc)
+        if "429" in message or "rate limit" in message.lower():
+            ui.error(
+                "LLM provider rate limit reached. If this is OpenRouter's free tier, "
+                "you're capped at 50 requests/day — it resets at 00:00 UTC, or add "
+                "$10 in credits to unlock 1000 free requests/day."
+            )
+        else:
+            ui.error(f"LLM call failed: {message.splitlines()[0]}")
+    else:
+        ui.error(f"Run failed: {type(exc).__name__}: {exc}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HEADLESS MODE
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _run_headless(
+    task: str,
+    config: CLIConfig,
+    use_team: bool = False,
+    no_tester: bool = False,
+    show_report: bool = True,
+    show_progress: bool = True,
+) -> int:
+    """Run one task unattended and return the process exit code.
+
+    No approval callback is passed, so every tool call runs without a prompt
+    — headless mode exists to be scriptable, and a prompt written to a stdin
+    nobody is watching would simply hang.
+    """
+    from agent.runtime.sandbox import close_sandbox
+
+    observability_hooks = _make_observability_hooks()
+    atexit.register(close_sandbox)
+
+    reset_headless_display()
+    display = get_headless_display(show_progress=show_progress)
+    display.start_run(task, config.model_name, "team" if use_team else "single")
+
+    start_time = time.monotonic()
+
+    try:
+        if use_team:
+            from agent.core.orchestrator import Orchestrator
+            from agent.observability.observability import GuardrailPolicy
+
+            orchestrator = Orchestrator(
+                model=config.model_name,
+                include_tester=not no_tester,
+                guardrail_policy=GuardrailPolicy(),
+                observability_hooks=observability_hooks,
+            )
+            result = orchestrator.run(task)
+            if show_report:
+                display.print_markdown(result["report_markdown"])
+            outcome, session_id = result["final_outcome"], result["session_id"]
+        else:
+            def _count_and_print(tool_name: str, tool_input: dict, raw_result: str) -> None:
+                """Feed the summary panel's tool counter as calls go by.
+
+                The agent loop renders its own per-tool lines through
+                agent/utils/ui.py, so the headless manager never sees them and
+                its counter would otherwise report 0 for every run. This is
+                the one point every tool call passes through.
+                """
+                display.note_tool(tool_name)
+                _print_grounded_tool_result(tool_name, tool_input, raw_result)
+
+            agent = _create_agent(
+                config,
+                observability_hooks=observability_hooks,
+                on_tool_result=_count_and_print,
+            )
+            result = agent.run(task)
+            outcome, session_id = result["outcome"], result["session_id"]
+    except KeyboardInterrupt:
+        display.print_error("Interrupted.")
+        return 130
+    except Exception as exc:  # noqa: BLE001 — headless must never dump a traceback at a script
+        display.print_error(str(exc))
+        return 1
+
+    display.print_result(outcome, session_id, time.monotonic() - start_time)
+    return 0 if outcome == "complete" else 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERACTIVE MODE
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _Approver:
+    """The approval prompt for interactive mode.
+
+    Answers: y (this call) · n (refuse) · a (approve everything from here on,
+    the same as /yolo). A non-tty stdin auto-approves rather than hanging,
+    so `echo "task" | swarn` still works.
+    """
+
+    def __init__(self, config: CLIConfig):
+        self.config = config
+
+    def __call__(self, tool_name: str, tool_input: dict) -> bool:
+        from agent.core.approval_policy import describe_operation
+
+        if self.config.yolo_mode:
+            print_yolo_approve(1)
+            return True
+        if not sys.stdin.isatty():
+            return True
+
+        print_approval_header(1)
+        print_approval_item(1, 1, tool_name, describe_operation(tool_name, tool_input))
+        try:
+            answer = (
+                console.input(f"{indent()}[bold]approve?[/bold] [y/n/a] ").strip().lower()
+            )
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return False
+        if answer in ("a", "all"):
+            self.config.yolo_mode = True
+            console.print("  [info]auto-approve on for the rest of this session.[/info]")
+            return True
+        return answer in ("", "y", "yes")
+
+
+def _cmd_model(arg: str, config: CLIConfig) -> None:
+    """/model — show the current model, or record a different one.
+
+    Routing note: agent/llm/router.py hard-routes every call to one deployed
+    endpoint, so switching changes what is recorded and displayed, not where
+    the traffic goes. Saying so plainly beats a switch that appears to work.
+    """
+    if not arg:
+        console.print(f"  [info]Model:    {config.model_name}[/info]")
+        console.print(f"  [info]Endpoint: {DEPLOYED_BASE_URL}[/info]")
+        if config.model_name != DEPLOYED_MODEL_NAME:
+            console.print(
+                f"  [yellow]Note:[/yellow] all calls still route to the deployed "
+                f"model ({DEPLOYED_MODEL_NAME}) — see agent/llm/router.py."
+            )
+        console.print("  [dim]/model <id> to record a different model.[/dim]")
+        return
+    old, config.model_name = config.model_name, arg
+    save_config(config)
+    console.print(f"  [info]Model: {old} → {arg}  (saved)[/info]")
+    if arg != DEPLOYED_MODEL_NAME:
+        console.print(
+            f"  [yellow]Note:[/yellow] requests still go to the deployed endpoint "
+            f"({DEPLOYED_MODEL_NAME} @ {DEPLOYED_BASE_URL}). To change that, set "
+            "SWARN_DEPLOYED_MODEL / SWARN_DEPLOYED_BASE_URL."
+        )
+
+
+def _cmd_effort(arg: str, config: CLIConfig) -> None:
+    if not arg:
+        console.print(f"  [info]Reasoning effort: {config.reasoning_effort or 'default'}[/info]")
+        console.print(f"  [dim]/effort <{'|'.join(VALID_EFFORT_LEVELS)}>[/dim]")
+        return
+    if arg not in VALID_EFFORT_LEVELS:
+        console.print(f"  [bold red]Unknown effort level:[/bold red] {arg}")
+        return
+    config.reasoning_effort = arg
+    save_config(config)
+    console.print(f"  [info]Reasoning effort: {arg}  (saved)[/info]")
+
+
+def _cmd_share_traces(arg: str, config: CLIConfig) -> None:
+    if not arg:
+        console.print(
+            f"  [info]Trace visibility: {'public' if config.share_traces else 'private'}[/info]"
+        )
+        console.print("  [dim]/share-traces <public|private>[/dim]")
+        return
+    if arg not in ("public", "private"):
+        console.print("  [bold red]Expected 'public' or 'private'.[/bold red]")
+        return
+    config.share_traces = arg == "public"
+    save_config(config)
+    console.print(f"  [info]Trace visibility: {arg}  (saved)[/info]")
+
+
+def _cmd_status(config: CLIConfig, agent, turns: int) -> None:
+    console.print()
+    console.print(f"  [bold]Model[/bold]           {config.model_name}")
+    console.print(f"  [bold]Endpoint[/bold]        {DEPLOYED_BASE_URL}")
+    console.print(f"  [bold]Turns[/bold]           {turns}")
+    console.print(f"  [bold]History[/bold]         {len(agent.history)} messages")
+    session = getattr(agent, "_session", None)
+    console.print(
+        f"  [bold]Session[/bold]         "
+        f"{session.id[:8] if session else '— (starts on your first question)'}"
+    )
+    console.print(f"  [bold]Tool runtime[/bold]    {_tool_runtime_label(config)}")
+    console.print(f"  [bold]Max iterations[/bold]  {agent.max_iterations}")
+    console.print(f"  [bold]Auto-approve[/bold]    {'on' if config.yolo_mode else 'off'}")
+    console.print(f"  [bold]Effort[/bold]          {config.reasoning_effort or 'default'}")
+    console.print(f"  [bold]Traces[/bold]          {'public' if config.share_traces else 'private'}")
+    console.print(f"  [bold]Config[/bold]          {DEFAULT_CONFIG_PATH}")
+    console.print()
+
+
+def _cmd_resume(arg: str, agent) -> None:
+    """/resume — reload a past session's task and summary as context for the
+    current conversation, so a follow-up can build on an earlier run."""
+    from agent.memory.memory import get_session_store
+
+    store = get_session_store()
+    if not arg:
+        console.print(store.list_sessions(n=10))
+        console.print("  [dim]/resume <session id> to load one.[/dim]")
+        return
+    text = store.recall_as_text(arg)
+    if not text or "not found" in text.lower():
+        console.print(f"  [bold red]No such session:[/bold red] {arg}")
+        return
+    agent.history = [
+        {"role": "user", "content": f"Context — transcript of an earlier session:\n\n{text}"},
+        {"role": "assistant", "content": "Understood. I have that earlier session in mind."},
+    ]
+    console.print(f"  [info]Resumed session {arg} — its transcript is now in context.[/info]")
+
+
+def _undo(agent) -> None:
+    """/undo — drop the last user turn and everything after it."""
+    if not agent.history:
+        console.print("  [info]Nothing to undo.[/info]")
+        return
+    for i in range(len(agent.history) - 1, -1, -1):
+        message = agent.history[i]
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            del agent.history[i:]
+            console.print("  [info]Last turn removed from context.[/info]")
+            return
+    agent.reset_conversation()
+    console.print("  [info]Context cleared.[/info]")
+
+
+def _clear_workspace() -> None:
+    from agent.runtime.tools import WORKSPACE_DIR
+
+    for item in os.listdir(WORKSPACE_DIR):
+        if item.startswith("."):
+            continue
+        path = os.path.join(WORKSPACE_DIR, item)
+        shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+    console.print("  [info]Workspace cleared.[/info]")
+
+
+# REPL word → subcommand name. Only the document commands are exposed: a
+# document session is naturally iterative — ingest once, then ask several
+# questions — and dropping to a second shell between questions breaks that
+# rhythm. `run` and `team` are deliberately absent; typing a bare task
+# already does the first, and `team <task>` is handled separately so it can
+# share the REPL's guardrail and observability instances.
+_REPL_SUBCOMMANDS = {
+    "ask": "ask",
+    "ingest": "ingest",
+    "inspect": "doc-inspect",
+    "to-csv": "to-csv",
+    "extract-pdf": "extract-pdf",
+}
+
+
+def _repl_document_command(cmd: str, arg: str) -> bool:
+    """Run a document subcommand typed at the REPL prompt.
+
+    Dispatched through the very same Click command the shell invokes, rather
+    than reimplemented against the underlying capability functions. Calling
+    those directly is what the first version of this did, and it was wrong in
+    two different ways at once (inspect_document returns a dict, not an
+    object with .summary(); pdf_to_csv returns a ConversionResult, not a list
+    of paths) — mistakes that were possible only because the REPL was
+    re-deriving output the subcommand already knows how to render. Going
+    through Click means the two surfaces cannot disagree, and every flag the
+    subcommand accepts works here too.
+
+    Returns True when `cmd` was ours to handle.
+    """
+    import shlex
+
+    subcommand = _REPL_SUBCOMMANDS.get(cmd)
+    if subcommand is None:
+        return False
+    if not arg:
+        console.print(f"  [bold red]Usage:[/bold red] {cmd} <arguments>  "
+                      f"[dim](swarn {subcommand} --help)[/dim]")
+        return True
+
+    try:
+        argv = shlex.split(arg)
+    except ValueError as exc:  # unbalanced quotes
+        console.print(f"  [bold red]Could not parse arguments:[/bold red] {exc}")
+        return True
+
+    click_command = typer.main.get_command(app)
+    try:
+        # standalone_mode=False stops Click from calling sys.exit() on
+        # completion or on a usage error — which would take the REPL down
+        # with it. Exit/UsageError come back as exceptions instead.
+        click_command.main(
+            args=[subcommand, *argv],
+            standalone_mode=False,
+            # The document subcommands read their config from ctx.obj only
+            # via `or load_config()`, so nothing extra needs threading here.
+        )
+    except (typer.Exit, SystemExit):
+        pass  # a non-zero document exit code is information, not a crash
+    except click.UsageError as exc:
+        console.print(f"  [bold red]{exc.format_message()}[/bold red]  "
+                      f"[dim](swarn {subcommand} --help)[/dim]")
+    except Exception as exc:  # noqa: BLE001 — one bad command must not end the session
+        console.print(f"  [bold red]{type(exc).__name__}:[/bold red] {exc}")
+    return True
+
+
+def _run_interactive(config: CLIConfig, no_banner: bool = False) -> None:
+    """The REPL: a conversation with tool approval, slash commands, and
+    history that carries across turns."""
+    from agent.observability.observability import GuardrailPolicy
+    from agent.runtime.sandbox import close_sandbox
+    from agent.runtime.tools import TOOL_REGISTRY
+
+    observability_hooks = _make_observability_hooks()
+    atexit.register(close_sandbox)
+    guardrails = GuardrailPolicy()
+
+    # Built before the banner on purpose: constructing the AgentLoop resolves
+    # the LLM client, which may print a routing notice. print_init_done()
+    # overwrites the banner's "Tools: loading..." line by walking the cursor
+    # back up a fixed number of rows, so nothing may print in between.
+    agent = _create_agent(
+        config,
+        observability_hooks=observability_hooks,
+        approval_callback=_Approver(config),
+        keep_history=True,
+        # One sitting at this prompt is one session. Every question asked here
+        # is recorded as a turn inside it, and it is closed when the REPL
+        # exits — so `history` lists one entry per conversation rather than
+        # one per question.
+        single_session=True,
+    )
+    # Even a hard exit (an unhandled crash, a closed terminal) should leave a
+    # finalized session behind rather than one that looks like it is still
+    # running. Turn-by-turn checkpointing already protects the content; this
+    # protects the closing state.
+    atexit.register(agent.close_session)
+
+    if not no_banner:
+        print_banner(model=config.model_name, tool_runtime=_tool_runtime_label(config))
+
+    print_init_done(tool_count=len(TOOL_REGISTRY))
+    console.print("\n[dim]Type a task, or '/help' for commands.[/dim]\n")
+
+    last_team_report: Optional[str] = None
+    turns = 0
+
+    while True:
+        try:
+            # lstrip the BOM: piping a UTF-8-with-BOM script into stdin
+            # otherwise turns the first "/help" into a task for the agent.
+            # Ghost placeholder text sits inside the input line and
+            # clears on the first keypress (see read_user_input).
+            raw = read_user_input().lstrip("﻿").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            agent.close_session()
+            break
+
+        if not raw:
+            continue
+
+        head, _, rest = raw.partition(" ")
+        cmd, arg = head.lower(), rest.strip()
+
+        if cmd in ("exit", "quit", "/quit", "/exit", "bye"):
+            console.print("\n[info]Shutting down...[/info]")
+            agent.close_session()
+            break
+
+        if cmd in ("/help", "help"):
+            print_help()
+            continue
+
+        if cmd == "history":
+            from agent.memory.memory import get_session_store
+
+            console.print(
+                get_session_store().list_sessions(n=int(arg) if arg.isdigit() else 10)
+            )
+            continue
+
+        if cmd == "recall" and arg:
+            from agent.memory.memory import get_session_store
+
+            console.print(get_session_store().recall_as_text(arg))
+            continue
+
+        if cmd == "guardrails":
+            console.print(guardrails.summary())
+            continue
+
+        if cmd == "index" and arg:
+            from agent.runtime.tools import index_project
+
+            console.print(index_project(arg))
+            continue
+
+        if cmd in ("clear", "/clear"):
+            _clear_workspace()
+            continue
+
+        if cmd == "report":
+            if last_team_report is None:
+                console.print("  [info]No 'team' run has completed yet in this session.[/info]")
+            else:
+                from agent.utils import ui
+
+                ui.markdown(last_team_report)
+            continue
+
+        if cmd == "team" and arg:
+            from agent.core.orchestrator import Orchestrator
+
+            orchestrator = Orchestrator(
+                model=config.model_name,
+                guardrail_policy=guardrails,
+                observability_hooks=observability_hooks,
+            )
+            result = orchestrator.run(arg)
+            last_team_report = result["report_markdown"]
+            console.print(
+                f"\n[info]Multi-agent run finished: {result['final_outcome']}. "
+                "Type 'report' to see the full timeline.[/info]"
+            )
+            continue
+
+        if _repl_document_command(cmd, arg):
+            continue
+
+        if cmd == "/plan":
+            from agent.core.plan import get_current_plan
+
+            if get_current_plan():
+                print_plan()
+            else:
+                console.print(
+                    "  [info]No plan yet — one appears once the agent lays out steps.[/info]"
+                )
+            continue
+
+        if cmd == "/new":
+            # Closes the current session too, not just the message history:
+            # /new means "that conversation is over", and the next question
+            # starts a fresh session the same way reopening the REPL would.
+            agent.close_session()
+            agent.reset_conversation()
+            turns = 0
+            console.print("  [info]New conversation — previous context dropped.[/info]")
+            continue
+
+        if cmd == "/compact":
+            before, after = agent.compact_conversation()
+            print_compacted(before, after)
+            continue
+
+        if cmd == "/undo":
+            _undo(agent)
+            continue
+
+        if cmd == "/model":
+            _cmd_model(arg, config)
+            agent.model = config.model_name
+            continue
+
+        if cmd == "/effort":
+            _cmd_effort(arg.lower(), config)
+            continue
+
+        if cmd == "/share-traces":
+            _cmd_share_traces(arg.lower(), config)
+            continue
+
+        if cmd == "/resume":
+            _cmd_resume(arg, agent)
+            continue
+
+        if cmd == "/status":
+            _cmd_status(config, agent, turns)
+            continue
+
+        if cmd == "/yolo":
+            config.yolo_mode = not config.yolo_mode
+            save_config(config)
+            state = (
+                "ON — tool calls run without asking"
+                if config.yolo_mode
+                else "OFF — side-effecting tools need approval"
+            )
+            console.print(f"  [info]Auto-approve {state}  (saved)[/info]")
+            continue
+
+        if cmd.startswith("/"):
+            console.print(f"  [bold red]Unknown command:[/bold red] {cmd}  [dim](/help)[/dim]")
+            continue
+
+        # Anything else is a task for the agent.
+        if agent._policy:
+            agent._policy.consecutive_errors = 0
+        try:
+            agent.run(raw)
+            turns += 1
+        except KeyboardInterrupt:
+            print_interrupted()
+        except Exception as exc:  # noqa: BLE001 — one bad turn must not end the session
+            _report_run_failure(exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CLI SURFACE
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    no_banner: bool = typer.Option(False, "--no-banner", help="Skip the startup banner."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to record for this invocation."),
+    max_iterations: Optional[int] = typer.Option(None, "--max-iterations", help="Cap on agentic loop iterations."),
+    no_stream: bool = typer.Option(False, "--no-stream", help="Disable streamed (typewriter) output."),
+    sandbox_tools: bool = typer.Option(False, "--sandbox-tools", help="Run tools in a Docker sandbox instead of the local filesystem."),
+    version: bool = typer.Option(False, "--version", "-v", help="Show version and exit."),
+):
+    """
+    Swarn — autonomous AI engineering agent.
+
+    Run bare for interactive mode; pass a prompt for a headless one-shot.
+    """
+    if version:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as get_version
+
+        try:
+            console.print(f"swarn v{get_version('swarn')}")
+        except PackageNotFoundError:
+            console.print("swarn (not installed — running from source)")
+        raise typer.Exit(0)
+
+    load_dotenv()
+    config = _apply_runtime_options(
+        load_config(), model, max_iterations, no_stream, sandbox_tools
+    )
+    ctx.obj = config
+
+    if ctx.invoked_subcommand:
+        return
+
+    _run_interactive(config, no_banner=no_banner)
+
+
 @app.command()
 def run(
+    ctx: typer.Context,
     task: str = typer.Argument(..., help="The task, or a question to answer about a document."),
     paths: Optional[List[str]] = typer.Argument(None, help="Optional documents (PDF/image) the task is about."),
-    model: str = typer.Option(DEFAULT_MODEL, help="Ignored — all calls route to the deployed endpoint (see agent/llm/router.py)."),
     force_ask: bool = typer.Option(False, "--ask", help="Force the document fast path, skipping the agent."),
     force_agent: bool = typer.Option(False, "--agent", help="Force the ReAct agent, even for a plain document question."),
     page: int = typer.Option(None, "--page", help="Document fast path: restrict to a single 1-based page."),
     backend: str = typer.Option(None, "--backend", help="Document fast path: force 'text' or 'ocr'. Default: auto."),
     no_annotate: bool = typer.Option(False, "--no-annotate", help="Skip rendering evidence/annotated images."),
     show_json: bool = typer.Option(False, "--json", help="Document fast path: also print the full result as JSON."),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Suppress per-tool progress output."),
 ):
     """
     Run any one-off task — the universal entry point.
@@ -232,13 +971,6 @@ def run(
             annotate=not no_annotate, show_json=show_json))
 
     # ── agent path ──────────────────────────────────────────────────────
-    # Imported lazily inside each command, not at module level — `swarn
-    # --help` shouldn't need to construct an LLMClient (which reads the
-    # API key from the environment) just to print usage text.
-    from agent.core.agent_loop import AgentLoop
-    from agent.core.self_correction import SelfCorrectionPolicy
-    from agent.observability.observability import GuardrailPolicy
-
     agent_task = task
     if decision.documents:
         # Name the files as absolute paths in the task itself. The agent's
@@ -251,58 +983,35 @@ def run(
                       "swarn_doc_inspect (to extract fields with their locations).")
         typer.echo(f"[swarn] routing to the agent — {decision.reason}")
 
-    agent = AgentLoop(
-        model=model,
-        correction_policy=SelfCorrectionPolicy(),
-        guardrail_policy=GuardrailPolicy(),
-        on_tool_result=_print_grounded_tool_result,
+    raise typer.Exit(
+        _run_headless(
+            task=agent_task,
+            config=ctx.obj or load_config(),
+            use_team=False,
+            show_progress=not no_progress,
+        )
     )
-    try:
-        result = agent.run(agent_task)
-    except Exception as e:  # noqa: BLE001 — surface a friendly message instead of a raw traceback
-        from agent.utils import ui
-        from agent.llm.base import LLMError
-        ui.console.print()
-        if isinstance(e, LLMError):
-            msg = str(e)
-            if "429" in msg or "rate limit" in msg.lower():
-                ui.error(
-                    "LLM provider rate limit reached. If this is OpenRouter's free tier, "
-                    "you're capped at 50 requests/day — it resets at 00:00 UTC, or add "
-                    "$10 in credits to unlock 1000 free requests/day."
-                )
-            else:
-                ui.error(f"LLM call failed: {msg.splitlines()[0]}")
-        else:
-            ui.error(f"Run failed: {type(e).__name__}: {e}")
-        raise typer.Exit(code=1)
-
-    from agent.utils import ui
-    ui.console.print()
-    ui.outcome(result["outcome"], result["session_id"], result.get("summary"))
-    raise typer.Exit(code=0 if result["outcome"] == "complete" else 1)
 
 
 @app.command()
 def team(
+    ctx: typer.Context,
     task: str = typer.Argument(..., help="The task for the multi-agent pipeline."),
-    model: str = typer.Option(DEFAULT_MODEL, help="Ignored — all calls route to the deployed endpoint (see agent/llm/router.py)."),
     no_tester: bool = typer.Option(False, "--no-tester", help="Stop after Reviewer approval, skip the Tester stage."),
+    no_report: bool = typer.Option(False, "--no-report", help="Don't print the markdown report."),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Suppress per-tool progress output."),
 ):
-    """Run a one-off task through the Phase 11 Planner→Coder→Reviewer→Tester pipeline and exit."""
-    from agent.core.orchestrator import Orchestrator
-    from agent.observability.observability import GuardrailPolicy
-
-    orchestrator = Orchestrator(
-        model=model,
-        include_tester=not no_tester,
-        guardrail_policy=GuardrailPolicy(),
+    """Run one task headlessly through the Planner→Coder→Reviewer→Tester pipeline."""
+    raise typer.Exit(
+        _run_headless(
+            task=task,
+            config=ctx.obj or load_config(),
+            use_team=True,
+            no_tester=no_tester,
+            show_report=not no_report,
+            show_progress=not no_progress,
+        )
     )
-    result = orchestrator.run(task)
-    from agent.utils import ui
-    ui.console.print()
-    ui.markdown(result["report_markdown"])
-    raise typer.Exit(code=0 if result["final_outcome"] == "complete" else 1)
 
 
 @app.command()
@@ -786,7 +1495,63 @@ def serve(
     uvicorn.run("agent.web.dashboard:app", host=host, port=port, log_level="warning")
 
 
-def main():
+@app.command(name="config")
+def show_config(
+    ctx: typer.Context,
+    show_path: bool = typer.Option(False, "--path", help="Print the config file path and exit."),
+):
+    """Show the persisted CLI configuration (~/.config/swarn/cli_agent_config.json)."""
+    if show_path:
+        console.print(str(DEFAULT_CONFIG_PATH))
+        return
+    note = "" if DEFAULT_CONFIG_PATH.exists() else "  (not created yet — defaults shown)"
+    console.print(f"[dim]{DEFAULT_CONFIG_PATH}{note}[/dim]")
+    console.print(json.dumps((ctx.obj or load_config()).to_dict(), indent=2))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def app_command_names() -> list[str]:
+    """The names Typer registered, including explicit `name=` overrides."""
+    return [cmd.name or cmd.callback.__name__ for cmd in app.registered_commands]
+
+
+# Options that take a value: the token AFTER one of these looks positional but
+# isn't, so the bare-prompt rewrite has to skip it.
+_VALUE_OPTIONS = frozenset({
+    "--model", "-m", "--max-iterations", "--port", "-p", "--host",
+    "-n", "--limit", "--page", "--backend", "--data", "-d", "--steps", "-s",
+    "--time-limit", "-t", "--drafts", "--exec-timeout", "--workers", "-w",
+    "--token-budget", "--resume", "--feedback-model",
+})
+
+
+def _rewrite_bare_prompt(argv: list[str]) -> list[str]:
+    """`swarn "do X"` → `swarn run "do X"`.
+
+    Only the first positional argument is considered, and only when it isn't
+    already a command name — so `swarn run ...`, `swarn --help` and
+    `swarn -m X team ...` all keep their normal meaning. A bare `swarn` with
+    no positional argument at all is left alone, which is what drops it into
+    interactive mode.
+    """
+    commands = set(app_command_names())
+    for i, token in enumerate(argv):
+        if token.startswith("-"):
+            continue
+        if i > 0 and argv[i - 1] in _VALUE_OPTIONS:
+            continue
+        if token in commands:
+            return argv
+        return [*argv[:i], "run", *argv[i:]]
+    return argv
+
+
+def main() -> None:
+    sys.argv[1:] = _rewrite_bare_prompt(sys.argv[1:])
     app()
 
 

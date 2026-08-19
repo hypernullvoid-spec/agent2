@@ -123,3 +123,107 @@ def tracing_enabled() -> bool:
 def otel_endpoint() -> Optional[str]:
     """OTLP collector endpoint; None exports spans to the console."""
     return os.environ.get("OTEL_EXPORTER_ENDPOINT")
+
+
+# ═══ persisted CLI configuration ══════════════════════════════════════════════
+# Everything above is read-only environment state. What follows is the small
+# set of preferences the interactive REPL lets you change at runtime (/model,
+# /yolo, /effort, /share-traces) and writes back to disk, so a choice made in
+# one session is still in force in the next. Kept in this module rather than a
+# separate one so there remains a single answer to "where does configuration
+# live"; the two shapes just have different lifetimes.
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class MCPServerConfig:
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+
+
+def _default_model_name() -> str:
+    # Imported lazily: agent.llm.router pulls in the whole client stack, which
+    # a caller that only wants a config object shouldn't have to pay for.
+    from agent.llm import DEPLOYED_MODEL_NAME
+
+    return DEPLOYED_MODEL_NAME
+
+
+@dataclass
+class CLIConfig:
+    model_name: str = field(default_factory=_default_model_name)
+    reasoning_effort: Optional[str] = None
+    yolo_mode: bool = False
+    tool_runtime: str = "local"          # "local" | "sandbox"
+    max_iterations: int = MAX_ITERATIONS
+    share_traces: bool = False
+    mcpServers: dict[str, MCPServerConfig] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable view — the inverse of load_config()."""
+        return {
+            "model_name": self.model_name,
+            "reasoning_effort": self.reasoning_effort,
+            "yolo_mode": self.yolo_mode,
+            "tool_runtime": self.tool_runtime,
+            "max_iterations": self.max_iterations,
+            "share_traces": self.share_traces,
+            "mcpServers": {
+                name: {"command": s.command, "args": s.args, "env": s.env}
+                for name, s in self.mcpServers.items()
+            },
+        }
+
+
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "swarn"
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "cli_agent_config.json"
+
+
+def load_config(config_path: Optional[Path] = None) -> CLIConfig:
+    """Load the persisted CLI config, falling back to defaults.
+
+    A missing, unreadable or hand-mangled file must never stop the CLI from
+    starting — every failure path here returns a default CLIConfig rather
+    than raising.
+    """
+    config_path = config_path or DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        return CLIConfig()
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return CLIConfig()
+
+    servers = {
+        name: MCPServerConfig(
+            command=spec.get("command", ""),
+            args=spec.get("args", []),
+            env=spec.get("env", {}),
+        )
+        for name, spec in (data.get("mcpServers") or {}).items()
+    }
+    return CLIConfig(
+        model_name=data.get("model_name") or _default_model_name(),
+        reasoning_effort=data.get("reasoning_effort"),
+        yolo_mode=data.get("yolo_mode", False),
+        tool_runtime=data.get("tool_runtime", "local"),
+        max_iterations=data.get("max_iterations", MAX_ITERATIONS),
+        share_traces=data.get("share_traces", False),
+        mcpServers=servers,
+    )
+
+
+def save_config(config: CLIConfig, config_path: Optional[Path] = None) -> Path:
+    """Persist `config` so /model, /yolo, /effort and /share-traces survive
+    across sessions. Returns the path written."""
+    config_path = config_path or DEFAULT_CONFIG_PATH
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as fh:
+        json.dump(config.to_dict(), fh, indent=2)
+    return config_path

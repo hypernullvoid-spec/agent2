@@ -25,6 +25,7 @@ output (Phase 11) is scannable at a glance.
 """
 
 import json
+from contextlib import nullcontext
 
 from rich import box
 from rich.console import Console
@@ -62,11 +63,30 @@ def _title(role: str | None, label: str) -> str:
 # ────────────────────────────────────────────────── agent-loop events
 
 def session_header(session_id: str, task: str, role: str | None = None) -> None:
-    accent = _accent(role)
-    console.print()
-    console.print(Rule(Text(_title(role, f"session {session_id[:8]}"), style=f"bold {accent}"),
-                       style=accent, align="left"))
-    console.print(Text(task if len(task) <= 200 else task[:200] + "…", style="italic dim"))
+    """No-op: the session rule and echoed task were noise in the REPL, where
+    the user has just typed the task and can still see it."""
+    return
+
+
+def thinking(label: str | None = None, role: str | None = None):
+    """Animated "Thinking…" status for the stretch where the agent is
+    waiting on the model and has nothing to print yet.
+
+    Delegates to the active theme (SWARN_THEME=classic|lain) so the frames,
+    color and wording match the rest of the CLI; falls back to a plain Rich
+    spinner if the theme layer can't be imported. Returns a context manager
+    that clears itself on exit, and is a no-op on a non-TTY.
+    """
+    try:
+        from agent.utils import terminal_display as td
+        return td.thinking_status(label)
+    except Exception:  # noqa: BLE001 — display must never break a run
+        if not console.is_terminal:
+            return nullcontext()
+        return console.status(
+            Text(_title(role, f"{label or 'Thinking'}…"), style=_accent(role)),
+            spinner="dots",
+        )
 
 
 def agent_text(text: str, role: str | None = None) -> None:

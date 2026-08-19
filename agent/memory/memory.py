@@ -47,6 +47,10 @@ class StepKind(str, Enum):
     CORRECTION  = "correction"
     COMPLETE    = "complete"
     ERROR       = "error"
+    # A new question typed at the interactive prompt. One REPL sitting is one
+    # session, so a session can hold several of these; a headless run has
+    # exactly one task and records none.
+    USER_TURN   = "user_turn"
 
 
 @dataclass
@@ -109,6 +113,17 @@ class Session:
     def tool_call_steps(self) -> list[Step]:
         return [s for s in self.steps if s.kind == StepKind.TOOL_CALL]
 
+    def user_turns(self) -> list[str]:
+        """Every question asked in this session, in order.
+
+        `task` is only the first one — an interactive session accumulates the
+        rest as USER_TURN steps, so anything reporting on a session should ask
+        here rather than assuming `task` tells the whole story.
+        """
+        return [self.task] + [
+            s.data.get("task", "") for s in self.steps if s.kind == StepKind.USER_TURN
+        ]
+
     def tool_call_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for s in self.tool_call_steps():
@@ -136,7 +151,10 @@ class Session:
     def to_markdown(self) -> str:
         """Human-readable session replay — useful for reviewing what happened."""
         ts  = datetime.fromtimestamp(self.started_at).strftime("%Y-%m-%d %H:%M:%S")
-        dur = f"{self.duration_s()}s" if self.duration_s() else "—"
+        # `is not None`, not a truth test: a sub-second session rounds to 0.0,
+        # which is falsy, and used to report its duration as "—" (unknown)
+        # rather than as the very short time it actually took.
+        dur = f"{self.duration_s()}s" if self.duration_s() is not None else "—"
 
         lines = [
             f"# Session `{self.id[:8]}`",
@@ -145,6 +163,8 @@ class Session:
             f"|---|---|",
             f"| **Task** | {self.task} |",
             f"| **Model** | {self.model} |",
+            *([f"| **Turns** | {len(self.user_turns())} |"]
+              if len(self.user_turns()) > 1 else []),
             f"| **Started** | {ts} |",
             f"| **Duration** | {dur} |",
             f"| **Outcome** | {self.outcome or 'in progress'} |",
@@ -167,7 +187,20 @@ class Session:
             n  += 1
             ts2 = datetime.fromtimestamp(s.timestamp).strftime("%H:%M:%S")
 
-            if s.kind == StepKind.PLAN:
+            if s.kind == StepKind.USER_TURN:
+                # A heading rather than another numbered step: it divides the
+                # replay into the questions that produced it, so a long
+                # interactive session reads as a conversation instead of one
+                # undifferentiated run of tool calls.
+                n -= 1
+                lines += [
+                    "",
+                    f"## ▸ Turn {s.data.get('turn', '?')}  `{ts2}`",
+                    "",
+                    f"**{s.data.get('task', '')}**",
+                ]
+
+            elif s.kind == StepKind.PLAN:
                 text = s.data.get("text", "")[:400]
                 lines += ["", f"### {n}. 💭 Plan  `{ts2}`", "", text]
 
@@ -263,14 +296,33 @@ class SessionStore:
         session.on_step.extend(self._global_step_subscribers)
         return session
 
+    def checkpoint_session(self, session: Session) -> None:
+        """Write a still-running session to disk without closing it.
+
+        An interactive sitting is one session spanning many turns, which means
+        the gap between "session created" and "session closed" is now as long
+        as the user keeps the REPL open. Persisting only at close would lose
+        an entire afternoon's conversation to one crash or one killed
+        terminal, so each turn checkpoints. _update_index upserts, so calling
+        this repeatedly just refreshes the same entry rather than accumulating
+        duplicates. Deliberately silent — the "saved" banner belongs to
+        close_session, and printing it per turn would be noise.
+        """
+        self._persist(session)
+        self._update_index(session)
+
     def close_session(self, session: Session) -> None:
         session.ended_at = time.time()
         self._persist(session)
         self._update_index(session)
         n_calls = len(session.tool_call_steps())
+        n_turns = len(session.user_turns())
+        # Turns are only worth reporting for an interactive sitting; a
+        # headless run always has exactly one and saying so is just noise.
+        turns = (f"{n_turns} turns  •  " if n_turns > 1 else "")
         print(
             f"\n[memory] ✓ Session {session.id[:8]}  "
-            f"saved  ({session.duration_s()}s  •  "
+            f"saved  ({turns}{session.duration_s()}s  •  "
             f"{n_calls} tool call{'s' if n_calls != 1 else ''}  •  "
             f"{session.corrections} correction{'s' if session.corrections != 1 else ''})"
         )
@@ -289,7 +341,12 @@ class SessionStore:
         for e in rows:
             sid     = e["id"][:8]
             outcome = (e.get("outcome") or "?")[:12]
-            dur     = f"{e.get('duration_s', '?')}s".rjust(6)
+            # duration_s is None while a session is still open — an
+            # interactive sitting checkpoints into the index on every turn, so
+            # `history` typed at the prompt now routinely lists the session
+            # doing the asking. "live" reads better there than "Nones".
+            dur     = (f"{e['duration_s']}s" if e.get("duration_s") is not None
+                       else "live").rjust(6)
             calls   = str(e.get("tool_calls", "?")).rjust(5)
             corr    = str(e.get("corrections", 0)).rjust(4)
             task    = (e.get("task") or "")[:36]
@@ -319,6 +376,15 @@ class SessionStore:
                 "Use list_sessions() to see available session IDs."
             )
 
+        steps = data.get("steps", [])
+        # An interactive sitting is one session holding many questions. `task`
+        # is only the first, so listing every turn matters here beyond
+        # tidiness: /resume feeds this text back as context for a follow-up
+        # conversation, and summarising a ten-question session by its opening
+        # line would drop almost all of what the user wants carried over.
+        later_turns = [s["data"].get("task", "") for s in steps
+                       if s["kind"] == StepKind.USER_TURN]
+
         lines = [
             f"Session {data['id'][:8]}",
             f"Task     : {data['task']}",
@@ -326,6 +392,10 @@ class SessionStore:
             f"Duration : {data.get('duration_s', '?')}s",
             f"Corrections: {data.get('corrections', 0)}",
         ]
+        if later_turns:
+            lines.append(f"\nQuestions asked ({len(later_turns) + 1} turns):")
+            for i, question in enumerate([data["task"], *later_turns], start=1):
+                lines.append(f"  {i}. {question}")
         if data.get("summary"):
             lines.append(f"Summary  : {data['summary']}")
 
@@ -335,7 +405,6 @@ class SessionStore:
             for tool, n in sorted(counts.items(), key=lambda x: -x[1]):
                 lines.append(f"  {tool} × {n}")
 
-        steps = data.get("steps", [])
         call_steps = [s for s in steps if s["kind"] == "tool_call"]
         if call_steps:
             lines.append(f"\nTool calls ({len(call_steps)} total):")
