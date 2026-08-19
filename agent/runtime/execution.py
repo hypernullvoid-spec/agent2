@@ -17,6 +17,8 @@ peek needs seconds; one global constant can't serve both.
 
 from __future__ import annotations
 
+import atexit
+import json
 import os
 import subprocess
 import sys
@@ -29,6 +31,23 @@ from typing import Optional
 from agent.paths import WORKSPACE_DIR
 from agent.config import DEFAULT_TIMEOUT, SANDBOX_IMAGE, sandbox_mode
 MAX_OUTPUT_CHARS = 50_000
+
+# The default image is a bare Python — it has no data-science stack, so every
+# generated script dies on `import pandas`. Installed once per container.
+# Set SWARN_SANDBOX_PACKAGES="" to skip, or point SWARN_SANDBOX_IMAGE at an
+# image that already ships them.
+SANDBOX_PACKAGES = os.environ.get(
+    "SWARN_SANDBOX_PACKAGES", "pandas numpy scipy scikit-learn matplotlib openpyxl")
+SANDBOX_INSTALL_TIMEOUT = int(os.environ.get("SWARN_SANDBOX_INSTALL_TIMEOUT", "900"))
+
+# Once the stack is installed the container is committed to this image, so the
+# minute-long pip install happens once ever rather than once per container —
+# a parallel search spawns one backend per run and would otherwise pay it N times.
+SANDBOX_READY_IMAGE = os.environ.get("SWARN_SANDBOX_READY_IMAGE", "swarn-sandbox:ready")
+
+# pip name → import name, where they differ
+_IMPORT_NAMES = {"scikit-learn": "sklearn", "pillow": "PIL", "beautifulsoup4": "bs4",
+                 "opencv-python": "cv2", "python-dateutil": "dateutil"}
 
 
 @dataclass
@@ -51,7 +70,16 @@ class ExecResult:
             parts.append(f"Error: command timed out after {self.exec_time:.0f}s")
         elif self.exit_code != 0:
             parts.append(f"[exit {self.exit_code}]")
-        parts.append(self.output if self.output.strip() else "(no output)")
+        if self.output.strip():
+            parts.append(self.output)
+        elif self.ok:
+            # bare "(no output)" reads like a failure, so the model retries or
+            # gives up when in fact its code simply never printed anything
+            parts.append("(the code ran successfully, exit 0, but printed nothing — "
+                         "Python scripts do not echo values like a notebook. "
+                         "Add print(...) around what you want to see.)")
+        else:
+            parts.append("(no output)")
         return "\n".join(parts)
 
 
@@ -118,6 +146,39 @@ class SubprocessBackend:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else
+    return True
+
+
+def _reap_orphan_containers(client) -> None:
+    """Remove sandbox containers whose creating process is gone.
+
+    A container runs `tail -f /dev/null` forever, so a session that crashes or
+    is killed before close() leaves it holding memory indefinitely. Matching on
+    the recorded PID means a concurrently running session is never touched.
+    """
+    try:
+        stale = client.containers.list(filters={"label": "swarn.sandbox=1"})
+    except Exception:  # noqa: BLE001
+        return
+    for container in stale:
+        pid = container.labels.get("swarn.pid")
+        if not pid or not pid.isdigit() or _pid_alive(int(pid)):
+            continue
+        try:
+            container.remove(force=True)
+            print(f"[sandbox] reaped orphaned container '{container.name}' "
+                  f"(its session, pid {pid}, is gone)")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # ─────────────────────────────────────────────────────────── docker backend
 
 class DockerBackend:
@@ -138,22 +199,91 @@ class DockerBackend:
         self.cpu_count = cpu_count
         self._container = None
         self._lock = threading.Lock()
+        self._bootstrapped = False
 
     def _ensure_container(self):
         with self._lock:
             if self._container:
                 return
             client = self._docker.from_env()
+            image = self.image
+            if SANDBOX_PACKAGES.strip() and self.image == SANDBOX_IMAGE:
+                try:                            # reuse the prepared image if we built one
+                    client.images.get(SANDBOX_READY_IMAGE)
+                    image = SANDBOX_READY_IMAGE
+                except Exception:               # noqa: BLE001 — not built yet
+                    pass
+            _reap_orphan_containers(client)
             name = f"swarn-sandbox-{uuid.uuid4().hex[:8]}"
-            print(f"[sandbox] starting container '{name}' ({self.image})…")
+            print(f"[sandbox] starting container '{name}' ({image})…")
             self._container = client.containers.run(
-                self.image,
+                image,
                 command="tail -f /dev/null",
                 name=name, detach=True, auto_remove=True,
                 volumes={self.workspace: {"bind": "/workspace", "mode": "rw"}},
                 working_dir="/workspace",
                 mem_limit=self.mem_limit, cpu_count=self.cpu_count,
+                labels={"swarn.sandbox": "1", "swarn.pid": str(os.getpid())},
             )
+            # The prepared image carries whatever SANDBOX_PACKAGES said WHEN IT WAS
+            # BUILT. Trusting it blindly means a package added to the list later is
+            # silently ignored until someone thinks to delete the cached image —
+            # the failure then surfaces as ImportError inside generated code, far
+            # from its cause. The probe is one cheap exec, so it always runs; only
+            # the minute-long install is skipped when nothing is actually missing.
+            self._bootstrap_packages()
+
+    def _bootstrap_packages(self) -> None:
+        """Install the data-science stack into a fresh container, once.
+
+        Only what is actually missing is installed, so a richer
+        SWARN_SANDBOX_IMAGE costs nothing. Failures are reported rather than
+        raised — the sandbox still works for code that needs no extras.
+        """
+        if self._bootstrapped:
+            return
+        self._bootstrapped = True
+        wanted = [p for p in SANDBOX_PACKAGES.split() if p]
+        if not wanted:
+            return
+        modules = {p: _IMPORT_NAMES.get(p, p.replace("-", "_")) for p in wanted}
+        probe = (
+            "import importlib.util, json\n"
+            f"mods = json.loads({json.dumps(json.dumps(modules))})\n"
+            "print(json.dumps([p for p, m in mods.items() "
+            "if importlib.util.find_spec(m) is None]))"
+        )
+        missing = wanted
+        result = self._run(["python3", "-c", probe], timeout=120)
+        for line in result.output.splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                try:
+                    missing = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    pass
+        if not missing:
+            return
+        print(f"[sandbox] installing {' '.join(missing)} into the container — "
+              f"one-time, may take a minute…")
+        install = self._run(
+            ["pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-q"] + missing,
+            timeout=SANDBOX_INSTALL_TIMEOUT)
+        if install.ok:
+            print(f"[sandbox] ready ({len(missing)} package(s) installed).")
+            repo, _, tag = SANDBOX_READY_IMAGE.partition(":")
+            try:
+                self._container.commit(repository=repo, tag=tag or "latest")
+                print(f"[sandbox] cached as {SANDBOX_READY_IMAGE} — later containers start "
+                      f"instantly. Delete that image to rebuild it.")
+            except Exception as e:  # noqa: BLE001 — caching is an optimisation, not a requirement
+                print(f"[sandbox] (could not cache the prepared image: {type(e).__name__}: {e})")
+        else:
+            print(f"[sandbox] WARNING: could not install {missing} — generated code that "
+                  f"imports them will fail. Set SWARN_SANDBOX_PACKAGES='' to skip this step, "
+                  f"or SWARN_SANDBOX_IMAGE to an image that already has them.\n"
+                  f"          {install.output.strip()[:300]}")
 
     def exec_python(self, code: str, timeout: Optional[int] = None) -> ExecResult:
         self._ensure_container()
@@ -237,13 +367,26 @@ class DockerBackend:
 ExecutionBackend = SubprocessBackend | DockerBackend
 
 
-def _docker_available() -> bool:
+def _docker_check() -> tuple[bool, str]:
+    """(available, reason-if-not). Distinguishes 'the docker Python package is
+    missing' from 'the daemon is down' — reporting both as "Docker unavailable"
+    sends people to check a daemon that is running perfectly well.
+    """
     try:
         import docker
+    except ImportError:
+        return False, ("the 'docker' Python package is not installed "
+                       "(the Docker daemon itself may be fine) — run: pip install docker")
+    try:
         docker.from_env().ping()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        return False, (f"cannot reach the Docker daemon ({type(e).__name__}) — "
+                       "is Docker running, and is your user in the 'docker' group?")
+
+
+def _docker_available() -> bool:
+    return _docker_check()[0]
 
 
 def make_backend(workspace: Optional[str] = None) -> ExecutionBackend:
@@ -253,9 +396,12 @@ def make_backend(workspace: Optional[str] = None) -> ExecutionBackend:
         return SubprocessBackend(workspace)
     if forced == "docker":
         return DockerBackend(workspace)
-    if _docker_available():
+    available, reason = _docker_check()
+    if available:
         return DockerBackend(workspace)
-    return SubprocessBackend(workspace)
+    backend = SubprocessBackend(workspace)
+    backend.unavailable_reason = reason
+    return backend
 
 
 _backend: Optional[ExecutionBackend] = None
@@ -267,8 +413,11 @@ def get_backend() -> ExecutionBackend:
     if _backend is None:
         _backend = make_backend()
         if _backend.name == "subprocess":
-            print("[sandbox] Docker unavailable — using local subprocess backend "
-                  "(hard timeouts, no container isolation). Set SWARN_SANDBOX=docker to force Docker.")
+            reason = getattr(_backend, "unavailable_reason", "")
+            detail = f" — {reason}" if reason else ""
+            print(f"[sandbox] Falling back to the local subprocess backend{detail}\n"
+                  "          Your code runs directly on this machine, with hard timeouts "
+                  "but no container isolation.")
     return _backend
 
 
@@ -277,3 +426,13 @@ def close_backend():
     if _backend:
         _backend.close()
         _backend = None
+
+
+@atexit.register
+def _close_backend_at_exit():
+    """A sandbox container outlives its Python process unless told to stop, so a
+    session that simply ends would leak one. Best-effort: never raise on exit."""
+    try:
+        close_backend()
+    except Exception:  # noqa: BLE001
+        pass

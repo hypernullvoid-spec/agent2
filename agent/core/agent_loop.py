@@ -58,6 +58,36 @@ from typing import Optional
 
 from agent.config import MAX_ITERATIONS, CONTEXT_CHAR_BUDGET
 
+# How many steps from the cap to start telling the model to wrap up. Hitting the
+# cap yields NOTHING — no summary, no answer — however much useful work was done,
+# so the model needs warning while it still has calls left to write one.
+BUDGET_WARN_AT = int(os.environ.get("SWARN_BUDGET_WARN_AT", "8"))
+BUDGET_FINAL_AT = int(os.environ.get("SWARN_BUDGET_FINAL_AT", "3"))
+
+
+def _review_summary(summary: str) -> list:
+    """Check the final summary against the evidence actually gathered."""
+    try:
+        from agent.data_analysis import review_conclusions
+        return review_conclusions(summary or "")
+    except Exception:  # noqa: BLE001 — never block finishing on a checker fault
+        return []
+
+
+def _budget_notice(step_num: int, cap: int) -> str:
+    """A note appended to the last tool result as the step budget runs down."""
+    left = cap - step_num
+    if left > BUDGET_WARN_AT or left <= 0:
+        return ""
+    if left <= BUDGET_FINAL_AT:
+        return (f"\n\n[BUDGET] {left} tool call(s) left before this run is cut off with NO "
+                f"answer delivered. Stop gathering data. Call finish_task NOW with a summary "
+                f"of what you already found — an incomplete summary is worth far more than "
+                f"none.")
+    return (f"\n\n[BUDGET] {left} of {cap} tool call(s) remaining. Start consolidating: do only "
+            f"what materially changes your conclusion, then call finish_task while you still "
+            f"can. Reaching the cap delivers nothing to the user.")
+
 # Context compaction (V3): long runs accumulate huge tool results in the
 # message history. When the total conversation size crosses this budget,
 # old tool results are truncated head+tail — deterministic, no extra LLM
@@ -169,6 +199,13 @@ class AgentLoop:
 
         ui.session_header(session.id, task, role=self.role_name)
 
+        summary_revised = False
+        try:
+            from agent.data_analysis import reset_evidence
+            reset_evidence()
+        except Exception:  # noqa: BLE001
+            pass
+
         for step_num in range(1, MAX_ITERATIONS + 1):
 
             # ── V3: context compaction ──────────────────────────────
@@ -205,7 +242,23 @@ class AgentLoop:
 
             # ── no tool calls → the model is done (or stuck) ────────
             if not tool_use_blocks:
-                session.outcome = "no_tool_use"
+                final_text = "\n".join(
+                    b.text.strip() for b in response.content
+                    if b.type == "text" and b.text.strip()
+                )
+                # Single-agent run (no role tool subset): a substantive
+                # plain-text turn is a legitimate answer to the task, not
+                # necessarily a stuck model. Accept it as completion so
+                # Q&A-style tasks (e.g. "is this data dirty?") succeed
+                # instead of failing with no_tool_use. Role-based runs in
+                # the orchestrator keep the strict finish_task contract.
+                if final_text and self._tool_names is None:
+                    session.summary   = final_text
+                    session.outcome   = "complete"
+                    session.add_step(StepKind.COMPLETE, summary=session.summary)
+                    ui.info("agent answered in plain text — marked complete.")
+                else:
+                    session.outcome = "no_tool_use"
                 self._store.close_session(session)
                 return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
 
@@ -303,14 +356,36 @@ class AgentLoop:
                 })
 
                 if block.name == "finish_task":
-                    finished          = True
-                    session.summary   = block.input.get("summary", "")
-                    session.add_step(StepKind.COMPLETE, summary=session.summary)
+                    summary = block.input.get("summary", "")
+                    # Every other guard protects one tool's output; this is the
+                    # only check on the CONCLUSION, where true results can be
+                    # assembled into a false claim. One chance to revise, then
+                    # accept regardless so a stubborn model cannot loop forever.
+                    issues = _review_summary(summary) if not summary_revised else []
+                    if issues:
+                        summary_revised = True
+                        note = ("\n\n[REVIEW] Your summary contradicts what was measured. Fix "
+                                "these and call finish_task again — this check runs once:\n"
+                                + "\n".join(f"  • {i}" for i in issues))
+                        tool_results[-1]["content"] = str(tool_results[-1]["content"]) + note
+                        for issue in issues:
+                            ui.error(f"[review] {issue}")
+                        session.add_step(StepKind.ERROR, reason="summary_review_failed")
+                    else:
+                        finished        = True
+                        session.summary = summary
+                        session.add_step(StepKind.COMPLETE, summary=summary)
 
                 if abort:
                     break   # don't run remaining tool calls in the batch
 
             # ── handle exit conditions ───────────────────────────────
+            budget = _budget_notice(step_num, MAX_ITERATIONS)
+            if budget and tool_results and not finished:
+                # Without this the loop just stops dead at the cap and the user
+                # gets nothing, however much good work was already done.
+                tool_results[-1]["content"] = str(tool_results[-1]["content"]) + budget
+                ui.info(budget.strip())
             messages.append({"role": "user", "content": tool_results})
 
             if abort:

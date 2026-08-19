@@ -89,3 +89,75 @@ def test_retry_gives_up_on_non_retryable():
         assert False, "should have raised"
     except Exception as e:
         assert "invalid api key" in str(e)
+
+
+# ─────────────────────────────────────────────── retry policy
+
+def _client_that_always_raises(message, models=None):
+    """A client whose API call always fails with `message`."""
+    from agent.llm.base import BaseLLMClient
+
+    class _Fake(BaseLLMClient):
+        def __init__(self):
+            super().__init__("some/model-v1")
+            self.attempts = 0
+            if models is not None:
+                lister = type("_M", (), {"list": lambda _s: type(
+                    "_R", (), {"data": [type("_X", (), {"id": m})() for m in models]})()})
+                self.client = type("_C", (), {"models": lister()})()
+
+        def _call_api(self, *a, **k):
+            self.attempts += 1
+            raise RuntimeError(message)
+
+    return _Fake()
+
+
+def test_context_overflow_is_permanent_and_never_retried():
+    """Retrying a too-long request re-sends the same payload and burns tokens."""
+    from agent.llm.base import LLMError
+    c = _client_that_always_raises(
+        "Error code: 400 - maximum context length is 1000000 tokens, "
+        "your messages resulted in 1835298 tokens")
+    try:
+        c.call("sys", [])
+    except LLMError as e:
+        assert "permanently" in str(e) and "maximum context length" in str(e)
+    assert c.attempts == 1, "a permanent failure must not be retried"
+
+
+def test_missing_model_404_fails_immediately_with_a_suggestion():
+    from agent.llm.base import LLMError
+    c = _client_that_always_raises("Error code: 404 - not found",
+                                   models=["other/model-a", "other/model-b"])
+    try:
+        c.call("sys", [])
+    except LLMError as e:
+        assert "does not exist at this endpoint" in str(e)
+        assert "SWARN_DEPLOYED_MODEL" in str(e)
+    assert c.attempts == 1
+
+
+def test_404_for_a_model_that_does_exist_is_treated_as_temporary(monkeypatch=None):
+    """The model is in the catalogue, so 404 means 'cannot reach it now'."""
+    import agent.llm.base as base
+    from agent.llm.base import LLMError
+    c = _client_that_always_raises("Error code: 404 - not found",
+                                   models=["some/model-v1", "other/model-a"])
+    slept = []
+    real_sleep = base.time.sleep
+    base.time.sleep = lambda s: slept.append(s)
+    try:
+        c.call("sys", [])
+    except LLMError as e:
+        assert "after retries" in str(e)
+    finally:
+        base.time.sleep = real_sleep
+    assert c.attempts == base.BaseLLMClient.MAX_RETRIES
+    assert sum(slept) > 60, f"retry window too short to outlast a restart: {slept}"
+
+
+def test_retry_after_hint_is_honoured():
+    from agent.llm.base import _retry_after_seconds
+    assert _retry_after_seconds(RuntimeError("rate limited; retry-after: 45")) == 45.0
+    assert _retry_after_seconds(RuntimeError("plain failure")) is None

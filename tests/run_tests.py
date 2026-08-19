@@ -20,6 +20,16 @@ MODULES = [
     "test_doom_loop",
     "test_e2e_search",
     "test_parallel_resume",
+    "test_data_cleaner",
+    "test_data_analysis",
+    "test_data_report",
+    "test_generality",
+    "test_agent_loop",
+    "test_model_persistence",
+    "test_ml_features",
+    "test_tier1_generality",
+    "test_data_bridge",
+    "test_workbook",
 ]
 
 

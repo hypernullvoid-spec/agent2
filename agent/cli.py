@@ -69,7 +69,26 @@ def run(
         correction_policy=SelfCorrectionPolicy(),
         guardrail_policy=GuardrailPolicy(),
     )
-    result = agent.run(task)
+    try:
+        result = agent.run(task)
+    except Exception as e:  # noqa: BLE001 — surface a friendly message instead of a raw traceback
+        from agent.utils import ui
+        from agent.llm.base import LLMError
+        ui.console.print()
+        if isinstance(e, LLMError):
+            msg = str(e)
+            if "429" in msg or "rate limit" in msg.lower():
+                ui.error(
+                    "LLM provider rate limit reached. If this is OpenRouter's free tier, "
+                    "you're capped at 50 requests/day — it resets at 00:00 UTC, or add "
+                    "$10 in credits to unlock 1000 free requests/day."
+                )
+            else:
+                ui.error(f"LLM call failed: {msg.splitlines()[0]}")
+        else:
+            ui.error(f"Run failed: {type(e).__name__}: {e}")
+        raise typer.Exit(code=1)
+
     from agent.utils import ui
     ui.console.print()
     ui.outcome(result["outcome"], result["session_id"], result.get("summary"))

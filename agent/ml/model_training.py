@@ -30,6 +30,7 @@ Phase 9 (evaluation/visualization) and Phase 10 (deployment) can retrieve
 it via get_trained_model() without retraining.
 """
 
+import os
 import time
 from typing import Optional
 
@@ -37,6 +38,11 @@ import numpy as np
 import pandas as pd
 
 from agent.ml.data_pipeline import get_data_pipeline
+
+WORKSPACE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "workspace")
+)
+ARTIFACTS_SUBDIR = "artifacts"
 
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_RANDOM_STATE = 42
@@ -53,18 +59,35 @@ class ModelTrainer:
     def __init__(self):
         self._trained_models: dict[str, dict] = {}   # name -> {"model":, "metrics":, "task_type":, ...}
         self._last_leaderboard: list[dict] = []
+        self._load_artifacts_from_disk()
 
     # ───────────────────────────────────────────────── task detection
 
     def _detect_task_type(self, y: pd.Series) -> str:
-        n_unique = y.nunique(dropna=True)
-        if pd.api.types.is_numeric_dtype(y) and n_unique > 20:
+        y = y.dropna()
+        if y.empty:
             return "regression"
-        if n_unique == 2:
-            return "binary_classification"
-        if 2 < n_unique <= 20:
+        n_unique = y.nunique()
+        if not pd.api.types.is_numeric_dtype(y):
+            if n_unique == 2:
+                return "binary_classification"
+            if n_unique <= 20:
+                return "multiclass_classification"
+            return "regression"
+        if n_unique > 20:
+            return "regression"
+        # Small-cardinality numeric target: distinguish an ordinal label scale
+        # (e.g. ratings 1..10) from a continuous-but-coincidentally-small-integer
+        # variable (e.g. prices 3,6,9,...,30 with big gaps). Labels tend to be
+        # low-spread integers; continuous values spread out or are fractional.
+        vals = y.astype(float)
+        is_integer_like = bool((vals == vals.round()).all())
+        spread = float(vals.max() - vals.min())
+        if is_integer_like and n_unique <= 20 and spread <= 20:
+            if n_unique == 2:
+                return "binary_classification"
             return "multiclass_classification"
-        return "regression"   # safest fallback for high-cardinality numeric-like targets
+        return "regression"
 
     def _candidate_models(self, task_type: str) -> dict[str, str]:
         """Return {candidate_key: human_label} appropriate for the task type."""
@@ -93,6 +116,7 @@ class ModelTrainer:
         candidates: Optional[list[str]] = None,
         test_size: float = DEFAULT_TEST_SIZE,
         run_id: Optional[str] = None,
+        cv_folds: Optional[int] = 5,
     ) -> str:
         """
         Train and evaluate candidate models on a dataset already in
@@ -101,6 +125,10 @@ class ModelTrainer:
         candidates: subset of {"linear"/"logistic", "random_forest",
         "xgboost", "lightgbm", "mlp"}. If omitted, all available
         candidates for the detected task type are tried.
+
+        cv_folds: when ≥2, each candidate also reports a K-fold
+        cross-validated primary metric (mean ± std) on the full data,
+        shown alongside the hold-out score. Pass cv_folds=None to disable.
         """
         try:
             from sklearn.model_selection import train_test_split
@@ -142,15 +170,18 @@ class ModelTrainer:
             return f"Error splitting data: {type(e).__name__}: {e}"
 
         leaderboard = []
+        cv_scoring = "neg_root_mean_squared_error" if task_type == "regression" else "accuracy"
         for key in chosen:
             try:
                 t0 = time.time()
                 model, metrics = self._fit_and_eval(key, task_type, X_train, y_train, X_test, y_test)
+                cv_score = self._cross_val_score(model, X, y, cv_folds, cv_scoring) if cv_folds and cv_folds >= 2 else None
                 elapsed = round(time.time() - t0, 2)
                 leaderboard.append({
                     "candidate": key,
                     "label": available[key],
                     "metrics": metrics,
+                    "cv_score": cv_score,
                     "train_seconds": elapsed,
                     "model": model,
                 })
@@ -178,6 +209,7 @@ class ModelTrainer:
                 "X_test": X_test,
                 "y_test": y_test,
             }
+            self.save_model(artifact_id)
 
         return self._format_leaderboard(name, task_type, primary_metric, lower_is_better, leaderboard, scored)
 
@@ -193,7 +225,10 @@ class ModelTrainer:
                 lines.append(f"  {e['label']:<32} FAILED — {e['error']}")
             else:
                 m = ", ".join(f"{k}={v:.4f}" for k, v in e["metrics"].items())
-                lines.append(f"  {e['label']:<32} {m}   ({e['train_seconds']}s)")
+                cv = ""
+                if e.get("cv_score"):
+                    cv = f", cv_{primary_metric}={e['cv_score'][0]:.4f}±{e['cv_score'][1]:.4f}"
+                lines.append(f"  {e['label']:<32} {m}{cv}   ({e['train_seconds']}s)")
 
         if scored:
             best = scored[0]
@@ -294,6 +329,23 @@ class ModelTrainer:
         metrics = self._compute_metrics(task_type, y_test, preds)
         return model, metrics
 
+    def _cross_val_score(self, model, X, y, cv_folds, scoring):
+        """K-fold CV of the primary metric on the full data. Returns
+        (mean, std) or None when CV isn't possible (e.g. the PyTorch MLP,
+        non-estimator models, or folds smaller than the class counts)."""
+        try:
+            from sklearn.model_selection import cross_val_score
+            scores = cross_val_score(
+                model, X, y, cv=int(cv_folds), scoring=scoring,
+                n_jobs=-1, error_score="raise",
+            )
+            mean = float(scores.mean())
+            if scoring.startswith("neg_"):
+                mean = -mean  # neg_root_mean_squared_error → positive RMSE
+            return (mean, float(scores.std()))
+        except Exception:  # noqa: BLE001
+            return None
+
     def _compute_metrics(self, task_type, y_true, y_pred) -> dict:
         if task_type == "regression":
             from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -389,6 +441,7 @@ class ModelTrainer:
             "X_test": X_test,
             "y_test": y_test,
         }
+        self.save_model(artifact_id)
 
         lines = [
             f"Optuna HPO complete — {n_trials} trials, candidate='{candidate}', task_type={task_type}",
@@ -452,6 +505,73 @@ class ModelTrainer:
 
         return None, None
 
+    # ───────────────────────────────────────────────── persistence
+
+    def _artifacts_dir(self) -> str:
+        d = os.path.join(WORKSPACE_DIR, ARTIFACTS_SUBDIR)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _artifact_path(self, artifact_id: str) -> str:
+        safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in artifact_id)
+        return os.path.join(self._artifacts_dir(), f"{safe}.pkl")
+
+    def save_model(self, artifact_id: str) -> str:
+        """Persist one trained artifact to workspace/artifacts/ so it survives restarts."""
+        if artifact_id not in self._trained_models:
+            return f"Error: no trained model artifact named '{artifact_id}'.\n{self.list_trained_models()}"
+        import joblib
+        path = self._artifact_path(artifact_id)
+        try:
+            joblib.dump(self._trained_models[artifact_id], path, compress=3)
+        except Exception as e:
+            return f"Error saving '{artifact_id}': {type(e).__name__}: {e}"
+        size_kb = os.path.getsize(path) / 1024
+        rel = os.path.relpath(path, WORKSPACE_DIR)
+        return (
+            f"Saved '{artifact_id}' to workspace/{rel} ({size_kb:.1f} KB). "
+            "It is auto-loaded on the next start."
+        )
+
+    def delete_model(self, artifact_id: str) -> str:
+        """Remove an artifact from memory and, if present, from disk."""
+        in_mem = artifact_id in self._trained_models
+        if in_mem:
+            del self._trained_models[artifact_id]
+        path = self._artifact_path(artifact_id)
+        removed_file = os.path.exists(path)
+        if removed_file:
+            os.remove(path)
+        if not in_mem and not removed_file:
+            return f"Error: no trained model artifact named '{artifact_id}'."
+        return f"Deleted '{artifact_id}' (from memory: {in_mem}, from disk: {removed_file})."
+
+    def _load_artifacts_from_disk(self) -> int:
+        """Load every persisted artifact in workspace/artifacts/ into memory.
+
+        Called from __init__, so a fresh process immediately sees models
+        trained in earlier sessions. Unreadable/corrupt files are skipped
+        with a warning rather than crashing startup.
+        """
+        d = os.path.join(WORKSPACE_DIR, ARTIFACTS_SUBDIR)
+        if not os.path.isdir(d):
+            return 0
+        import joblib
+        loaded = 0
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".pkl"):
+                continue
+            path = os.path.join(d, fn)
+            artifact_id = fn[:-4]
+            try:
+                art = joblib.load(path)
+            except Exception as e:  # noqa: BLE001
+                print(f"[model_training] skipping unreadable artifact '{fn}': {type(e).__name__}: {e}")
+                continue
+            self._trained_models[artifact_id] = art
+            loaded += 1
+        return loaded
+
     # ───────────────────────────────────────────────── retrieval (used by Phase 9/10)
 
     def get_trained_model(self, artifact_id: str) -> Optional[dict]:
@@ -459,11 +579,20 @@ class ModelTrainer:
 
     def list_trained_models(self) -> str:
         if not self._trained_models:
-            return "No trained model artifacts yet. Call train_models() or tune_hyperparameters() first."
+            return (
+                "No trained model artifacts in memory. Call train_models() or "
+                "tune_hyperparameters() first."
+            )
         lines = ["Trained model artifacts:"]
         for key, art in self._trained_models.items():
             m = ", ".join(f"{k}={v:.4f}" for k, v in art["metrics"].items())
             lines.append(f"  {key}  [{art['candidate']}]  {m}")
+        d = os.path.join(WORKSPACE_DIR, ARTIFACTS_SUBDIR)
+        n_saved = len([f for f in os.listdir(d) if f.endswith(".pkl")]) if os.path.isdir(d) else 0
+        lines.append(
+            f"\n{len(self._trained_models)} artifact(s) in memory; {n_saved} persisted "
+            "on disk (workspace/artifacts/, auto-loaded on next start)."
+        )
         return "\n".join(lines)
 
 

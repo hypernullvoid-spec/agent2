@@ -113,6 +113,10 @@ class OpenAICompatClient(BaseLLMClient):
                 kwargs["tool_choice"] = tc
 
         resp = self.client.chat.completions.create(**kwargs)
+        if not resp.choices:                                                                                                                                                                                     
+           raise RuntimeError(                                                                                                                                                                                  
+               "LLM returned no choices (empty response) — upstream rate_limit/overload, retrying"                                                                                                              
+           ) 
         choice = resp.choices[0]
         msg = choice.message
 
