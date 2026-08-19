@@ -54,7 +54,7 @@ from agent.memory.memory         import get_session_store, Session, StepKind
 from agent.core.self_correction import SelfCorrectionPolicy
 from agent.core.doom_loop       import DoomLoopDetector, WARNING as DOOM_WARNING
 
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.config import MAX_ITERATIONS, CONTEXT_CHAR_BUDGET
 
@@ -164,6 +164,7 @@ class AgentLoop:
         role_name:           Optional[str]                   = None,
         guardrail_policy:    Optional["object"]              = None,   # agent.observability.observability.GuardrailPolicy
         observability_hooks: Optional["object"]              = None,   # agent.observability.observability.ObservabilityHooks
+        on_tool_result:      Optional[Callable[[str, dict, str], None]] = None,
     ):
         self.llm           = LLMClient(model=model)
         self.model         = model
@@ -180,6 +181,13 @@ class AgentLoop:
         self._observe      = observability_hooks
         self._store        = get_session_store()
         self.role_name     = role_name   # purely cosmetic — prefixes log lines, e.g. "[planner]"
+        # Called with (tool_name, tool_input, raw_result) after every tool
+        # call, before the model sees the result. The CLI uses it to print a
+        # tool's own grounded output (doc_qa's verified evidence, say) instead
+        # of leaving only the agent's later paraphrase on screen. Given the
+        # RAW result deliberately — self-correction hints and guardrail
+        # banners are messages to the model, not to the reader.
+        self._on_tool_result = on_tool_result
 
     # ─────────────────────────────────────────────────── public entry point
 
@@ -288,6 +296,14 @@ class AgentLoop:
                 else:
                     raw_result = run_tool(block.name, block.input)
                 final_result = raw_result    # may be enriched by Phase 4 / Phase 15 below
+
+                # A presentation hook, never a control-flow one: a caller that
+                # raises in here must not kill a run that otherwise succeeded.
+                if self._on_tool_result:
+                    try:
+                        self._on_tool_result(block.name, block.input, raw_result)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"{tag}[warn] on_tool_result hook failed: {exc}")
 
                 # ── Phase 4: self-correction policy ─────────────────
                 # Runs on raw_result, NOT a guardrail-annotated string —

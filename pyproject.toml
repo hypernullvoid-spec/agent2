@@ -50,4 +50,4 @@ dependencies = [
 swarn = "agent.cli:main"
 
 [tool.setuptools]
-packages = ["agent", "agent.llm", "agent.search"]
+packages = ["agent", "agent.llm", "agent.search", "swarn", "swarn.capabilities"]

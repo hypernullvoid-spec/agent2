@@ -62,6 +62,10 @@ pillow>=10.0.0
 # Optional, install on demand:
 #   pip install pdf2image           # if you want to rasterize PDF pages directly
 #   pip install openai-whisper      # for index_audio (also needs ffmpeg installed)
+#   pip install reportlab           # only to GENERATE the sample PDF in
+#                                   # tests/test_pdf_extract.py — those tests
+#                                   # skip cleanly without it. Not needed to
+#                                   # read PDFs; pdfplumber above does that.
 # CLIP-based image-content search (index_image's visual embedding path)
 # reuses sentence-transformers, already a Phase 3 dependency above — no
 # extra install needed beyond what Phase 3 already requires.
@@ -91,3 +95,23 @@ rich>=13.0.0              # terminal UI (agent/ui.py) — panels, colors, markdo
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
+
+# ── Capability: visual document intelligence (bounding-box inspector) ─
+# swarn/capabilities/doc_intelligence.py — PDF/image -> fields WITH page
+# coordinates + an annotated image. pydantic was already installed
+# transitively (chromadb, fastapi); it is a DIRECT dependency here, so it
+# is pinned explicitly rather than left to whatever those pull in.
+pydantic>=2.6.0
+# pillow is already required by Phase 13 above (drawing overlays reuses it).
+# Optional, install on demand:
+#   pip install pdf2image     # preferred PDF rasterizer; also needs poppler
+#                             #   apt-get install poppler-utils  (Linux)
+#                             #   brew install poppler            (macOS)
+#                             # Without it, PDF pages rasterize through
+#                             # pdfplumber instead (already required above),
+#                             # so the capability works either way.
+# The 'ocr' backend reuses pytesseract from Phase 13 (plus the tesseract
+# binary). The 'vlm' backend reuses the openai SDK from Phase 1 — point
+# SWARN_VLM_BASE_URL/SWARN_VLM_API_KEY at any OpenAI-compatible vision
+# endpoint. With neither configured the deterministic mock backend runs, so
+# nothing extra is needed to try it out.

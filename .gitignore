@@ -57,8 +57,11 @@ dmypy.json
 # ── Agent runtime artifacts ─────────────────────────────────────────
 # runs/ = per-run journals, sessions/ = memory.py SESSIONS_DIR,
 # workspace/ = tool sandbox output (plots/, finetune/, deployments/),
-# knowledge/ = KnowledgeStore playbook.md + runs.db
+# knowledge/ = KnowledgeStore playbook.md + runs.db,
+# artifacts/ = doc_intelligence annotated images (regenerable: rerun
+#              `swarn doc-inspect` or examples/demo_doc_inspector.py)
 /runs/
+/artifacts/
 /sessions/
 /sandbox/
 /workspace/
@@ -123,3 +126,8 @@ CLAUDE.local.md
 data-analyst/store/*.parquet
 !data-analyst/store/test_data.parquet
 data-analyst/uploads/
+
+# Generated document-intelligence output
+*_evidence.png
+*_annotated.png
+/Swaraj_spot-*.json
