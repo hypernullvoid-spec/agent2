@@ -68,6 +68,7 @@ run_tool() the same way it always has.
 """
 
 import os
+import re
 
 # ─── constants ────────────────────────────────────────────────────────────────
 
@@ -264,7 +265,15 @@ def finish_task(summary: str) -> str:
         "Execute Python source code in a sandboxed Docker container and return "
         "its stdout + stderr. The sandbox has the workspace mounted at /workspace "
         "and a per-call timeout (default 300s, SWARN_EXEC_TIMEOUT). Falls back to subprocess if Docker is "
-        "unavailable. For one-off scripts, prefer this over run_shell."
+        "unavailable. For one-off scripts, prefer this over run_shell.\n"
+        "LOADED DATASETS ARE ALREADY AVAILABLE HERE as pandas DataFrames named "
+        "exactly as they were loaded — just use `orders` directly, do NOT call "
+        "pd.read_csv('orders.csv') (that reads a stale copy and is refused). Only "
+        "the datasets your code mentions are bound, so nothing is copied "
+        "needlessly. Use load_dataset('name') for names that are not valid Python "
+        "identifiers, and publish_dataset('new_name', df) to hand a derived frame "
+        "back to the registry for later tool calls. Print what you want to see — "
+        "only stdout comes back, so the frame itself never has to fit in context."
     ),
     schema={
         "type": "object",
@@ -275,8 +284,104 @@ def finish_task(summary: str) -> str:
     },
 )
 def run_python(code: str) -> str:
-    from agent.runtime.sandbox import get_sandbox
-    return get_sandbox().exec_python(code)
+    """Run code in the sandbox — unless it would analyse the wrong copy of the data.
+
+    This used to prepend a warning and run the code anyway. A warning above a
+    screenful of correct-looking output is not a stop sign: in one real session
+    four consecutive stale reads were flagged and every one was ignored, and the
+    figures they produced went into the final report. The read is refused instead,
+    because there is no version of this where re-reading the file was the right
+    call — the loaded dataset is one tool call away.
+
+    Refusing was only half an answer, though. The sandbox runs in a separate
+    process, so for a long time there was no way to reach a loaded dataset from
+    inside it and pd.read_csv was the only door — a prohibition with no
+    alternative, which a model can only respond to by retrying. agent/data_bridge.py
+    supplies the alternative: the datasets the code MENTIONS are bound to
+    variables of the same name before it runs.
+    """
+    stale = _stale_registry_read_warning(code)
+    if stale:
+        return (
+            "Error: this code was NOT run — it reads a file instead of the dataset that is "
+            "already loaded, so anything it computed would describe the wrong copy of the data.\n"
+            + stale
+            + "\n  → Use the dataset directly instead: it is ALREADY bound to a variable of "
+              "the same name in this sandbox. Drop the read_* call and refer to it by name "
+              "(e.g. `orders.groupby(...)`). No loading step is needed."
+        )
+    from agent.data_bridge import run_with_datasets
+    return run_with_datasets(code)
+
+
+_READ_CALL_RE = re.compile(
+    r"""read_(?:csv|parquet|excel|json)\s*\(\s*["']([^"']+)["']""", re.I)
+_SOURCE_PREFIXES = ("csv:", "excel:", "parquet:", "json:", "cloud:")
+
+
+def _source_basename(source) -> str:
+    """DataPipeline records origins as 'csv:sales.csv' — strip the connector
+    tag before comparing filenames."""
+    text = str(source)
+    for prefix in _SOURCE_PREFIXES:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return os.path.basename(text)
+
+
+def _stale_registry_read_warning(code: str) -> str:
+    """Catch `pd.read_csv('movies_clean.csv')` when 'movies_clean' is a loaded
+    dataset. The registry copy is in memory only, so any same-named file is a
+    different — usually older, usually uncleaned — dataset. Reading it silently
+    produces wrong numbers, which is far worse than a loud warning.
+    """
+    try:
+        from agent.ml.data_pipeline import get_data_pipeline
+        pipe = get_data_pipeline()
+        loaded, sources = pipe.datasets, getattr(pipe, "sources", {})
+        saved = getattr(pipe, "saved", {})
+    except Exception:  # noqa: BLE001
+        return ""
+    if not loaded:
+        return ""
+    lines = []
+    for path in _READ_CALL_RE.findall(code or ""):
+        base = os.path.basename(path)
+        stem = os.path.splitext(base)[0]
+        # save_dataset already wrote this exact file from the registry and the
+        # dataset has not changed since — reading it back is correct, not stale
+        in_sync = any(
+            os.path.basename(p) == base and name in loaded and loaded[name].shape == shape
+            for name, (p, shape) in saved.items()
+        )
+        if in_sync:
+            continue
+        # (a) the filename shadows a dataset name
+        if stem in loaded:
+            rows, cols = loaded[stem].shape
+            lines.append(f"    '{path}' on disk  vs  registry dataset '{stem}' "
+                         f"({rows:,} rows × {cols} cols) — NOT the same data.")
+            continue
+        # (b) it is the raw file a dataset was loaded from, and derived
+        #     (cleaned/pivoted) datasets already exist
+        origins = [n for n, src in sources.items() if _source_basename(src) == base]
+        for origin in origins:
+            derived = [n for n in loaded if n != origin and n.startswith(f"{origin}_")]
+            if derived:
+                rows, cols = loaded[derived[0]].shape
+                lines.append(f"    '{path}' is the RAW file behind dataset '{origin}'. You already "
+                             f"have '{derived[0]}' ({rows:,} rows × {cols} cols) derived from it — "
+                             f"re-reading the raw file discards every fix that was applied.")
+    if not lines:
+        return ""
+    return "\n".join(
+        ["⚠ STALE DATA WARNING — this code reads a FILE instead of using the loaded dataset:"]
+        + lines
+        + ["  Use the dataset BY NAME with describe_dataset / analyze_dataset / plot_* / "
+           "pivot_dataset / group_dataset, or call save_dataset(name, path) first if you "
+           "genuinely need a file."]
+    )
 
 
 @tool(
@@ -686,9 +791,10 @@ def engineer_features(name: str, target_col: str = None, drop_cols: list = None,
         "column and tries sensible candidates (linear/logistic, random "
         "forest, XGBoost, LightGBM, a small PyTorch MLP) unless a subset is "
         "specified. Returns a leaderboard ranked by the appropriate metric "
-        "(RMSE for regression, accuracy for classification) and keeps the "
-        "best model in memory as a trained artifact for later evaluation/"
-        "deployment phases."
+        "(RMSE for regression, accuracy for classification) — each candidate "
+        "also shows a K-fold cross-validated score (mean±std) by default — "
+        "and keeps the best model as a trained artifact for later "
+        "evaluation/deployment phases."
     ),
     schema={
         "type": "object",
@@ -701,13 +807,14 @@ def engineer_features(name: str, target_col: str = None, drop_cols: list = None,
                 "description": "Subset of model families to try. Omit to try all available for the detected task type.",
             },
             "test_size": {"type": "number", "description": "Fraction of data held out for evaluation (default 0.2)."},
+            "cv_folds": {"type": "number", "description": "K-fold cross-validation to report (default 5). Pass null/0 to disable."},
         },
         "required": ["name", "target_col"],
     },
 )
-def train_models(name: str, target_col: str, candidates: list = None, test_size: float = 0.2) -> str:
+def train_models(name: str, target_col: str, candidates: list = None, test_size: float = 0.2, cv_folds: int = 5) -> str:
     from agent.ml.model_training import get_model_trainer
-    return get_model_trainer().train_models(name, target_col, candidates=candidates, test_size=test_size)
+    return get_model_trainer().train_models(name, target_col, candidates=candidates, test_size=test_size, cv_folds=cv_folds)
 
 
 @tool(
@@ -739,12 +846,50 @@ def tune_hyperparameters(name: str, target_col: str, candidate: str = "xgboost",
 
 
 @tool(
-    description="List all trained model artifacts currently held in memory, with their metrics.",
+    description="List all trained model artifacts currently held in memory, with their metrics, and how many are persisted to disk.",
     schema={"type": "object", "properties": {}, "required": []},
 )
 def list_trained_models() -> str:
     from agent.ml.model_training import get_model_trainer
     return get_model_trainer().list_trained_models()
+
+
+@tool(
+    description=(
+        "Persist a trained model artifact to workspace/artifacts/ so it survives "
+        "process restarts (auto-loads on next start). Training and tuning already "
+        "save automatically — use this only to re-save after changes."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string", "description": "Artifact key from list_trained_models."},
+        },
+        "required": ["artifact_id"],
+    },
+)
+def save_model(artifact_id: str) -> str:
+    from agent.ml.model_training import get_model_trainer
+    return get_model_trainer().save_model(artifact_id)
+
+
+@tool(
+    description=(
+        "Delete a trained model artifact — removes it from memory and from "
+        "workspace/artifacts/ on disk. It will no longer appear in "
+        "list_trained_models or be usable by evaluate_model/compare_models."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string", "description": "Artifact key from list_trained_models."},
+        },
+        "required": ["artifact_id"],
+    },
+)
+def delete_model(artifact_id: str) -> str:
+    from agent.ml.model_training import get_model_trainer
+    return get_model_trainer().delete_model(artifact_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -843,6 +988,53 @@ def plot_residuals(artifact_id: str) -> str:
 def compare_models() -> str:
     from agent.ml.evaluation import get_model_evaluator
     return get_model_evaluator().compare_models()
+
+
+@tool(
+    description=(
+        "Rank the features of a trained model artifact by importance "
+        "(tree models: feature_importances_; linear/logistic: |coef|) and "
+        "save a bar chart (PNG, in workspace/plots/). Use this to explain "
+        "what the model actually relies on before trusting/deploying it."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string", "description": "Artifact key from train_models/tune_hyperparameters."}
+        },
+        "required": ["artifact_id"],
+    },
+)
+def feature_importance(artifact_id: str) -> str:
+    from agent.ml.evaluation import get_model_evaluator
+    return get_model_evaluator().feature_importance(artifact_id)
+
+
+@tool(
+    description=(
+        "Run in-session inference on a trained model artifact. Pass rows as "
+        "a list of dicts keyed by the model's feature column names (see the "
+        "feature_columns reported by train_models/evaluate), e.g. "
+        "[{'numeric__RunTime': 120, 'numeric__YEAR': 2015}]. Returns the "
+        "model's predictions. Use this to score new data without deploying "
+        "the FastAPI service."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string", "description": "Artifact key from train_models/tune_hyperparameters."},
+            "rows": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": {"type": "number"}},
+                "description": "Rows to predict on, keyed by feature column names.",
+            },
+        },
+        "required": ["artifact_id", "rows"],
+    },
+)
+def predict(artifact_id: str, rows: list) -> str:
+    from agent.ml.evaluation import get_model_evaluator
+    return get_model_evaluator().predict(artifact_id, rows)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1234,3 +1426,48 @@ def solve_ml_task(task: str, data_dir: str, steps: int = 12,
         f"Search finished without a working solution after {result.steps_done} steps. "
         f"See report for failure analysis: {result.report_path}"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Human-in-the-loop data cleaning & analysis (agent/data_cleaner.py)
+# ───────────────────────────────────────────────────────────────────────────────
+# Everything lives in agent/data_cleaner.py (standalone CLI + swarn tools).
+# This single import registers clean_dataset / apply_cleaning / ask_human /
+# describe_dataset / group_dataset into TOOL_REGISTRY above — no other changes
+# to this file or agent_loop.py are needed. Placed at the bottom so TOOL_REGISTRY
+# is fully defined before the lazy registration import resolves it.
+import agent.data_cleaner  # noqa: E402,F401
+
+agent.data_cleaner.register_into_swarn()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Exploratory analysis & visualisation (agent/data_analysis.py)
+# ───────────────────────────────────────────────────────────────────────────────
+# Registers analyze_dataset / plot_column / plot_relationship /
+# analyze_correlations / pivot_dataset / analyze_over_time / compare_groups.
+# Read-only: these never modify a loaded dataset. Charts are written to
+# workspace/plots/ and every tool also returns its finding in words, because
+# the model cannot see the image it just produced.
+import agent.data_analysis  # noqa: E402,F401
+
+agent.data_analysis.register_into_swarn()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Findings report (agent/data_report.py)
+# ───────────────────────────────────────────────────────────────────────────────
+# Registers write_report — Background/Key takeaways/Methodology/Appendix, carrying
+# a Situation/Complication/Resolution story. The narrative is the model's; the
+# numbers, charts, cleaning record and limitations are generated from recorded
+# evidence, and the report is refused if the two disagree.
+import agent.data_report  # noqa: E402,F401
+
+agent.data_report.register_into_swarn()
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Whole-workbook ingestion (agent/workbook.py)
+# ───────────────────────────────────────────────────────────────────────────────
+# load_excel handles ONE sheet. A workbook whose meaning lives in the relations
+# between its tabs needs the structure of all of them at once — see workbook.py.
+import agent.workbook  # noqa: E402,F401
+
+agent.workbook.register_into_swarn()

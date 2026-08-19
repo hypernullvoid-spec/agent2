@@ -45,6 +45,11 @@ from agent.paths import WORKSPACE_DIR, safe_path as _safe_path
 MAX_PREVIEW_ROWS = 10
 OUTLIER_Z_THRESHOLD = 3.0
 
+# Two category columns overlapping is only a defect for one SHAPE of overlap.
+# Tunable because "small minority" is a judgement call that differs by domain.
+CATEGORY_SAME_DOMAIN_JACCARD = float(os.environ.get("SWARN_CATEGORY_SAME_DOMAIN", "0.6"))
+CATEGORY_LEAK_MAX_SHARE = float(os.environ.get("SWARN_CATEGORY_LEAK_SHARE", "0.5"))
+
 
 # _safe_path lives in agent/paths.py — imported above under its original name.
 
@@ -61,6 +66,9 @@ class DataPipeline:
 
     def __init__(self):
         self.datasets: dict[str, pd.DataFrame] = {}
+        self.sources: dict[str, str] = {}      # name → where it was loaded from
+        self.saved: dict[str, tuple] = {}      # name → (abs path, shape when written)
+        self._cleaner_cache: dict[str, object] = {}
 
     # ───────────────────────────────────────────────── ingestion connectors
 
@@ -142,6 +150,69 @@ class DataPipeline:
 
     # ───────────────────────────────────────────────── validation
 
+    @staticmethod
+    def _overlapping_categories(df, max_levels: int = 60) -> list:
+        """Two category columns sharing values usually means one leaked into the other.
+
+        A real products file had 'Raksha Bandhan' — an OCCASION — sitting in the
+        Category column alongside Sweets and Cake. Every check here passed it: the
+        value is a non-null string, the schema infers cleanly, and no z-score
+        applies to text. It was then reported as a legitimate 8.4%-of-revenue
+        product category. Columns whose vocabularies overlap are worth a sentence,
+        because nothing else in this report can see it.
+        """
+        candidates = []
+        for col in df.columns:
+            series = df[col]
+            if not (series.dtype == object or str(series.dtype) in ("string", "str", "category")):
+                continue
+            # Single-character values count: 'M'/'F', grade bands and currency
+            # codes are ordinary categoricals, and excluding them meant whole
+            # columns were never checked at all.
+            values = {str(v).strip() for v in series.dropna().unique()}
+            values = {v for v in values if v}
+            if 1 < len(values) <= max_levels:
+                candidates.append((str(col), values))
+
+        notes = []
+        for i, (col_a, vals_a) in enumerate(candidates):
+            for col_b, vals_b in candidates[i + 1:]:
+                shared = vals_a & vals_b
+                if not shared:
+                    continue
+                # WHICH KIND of overlap this is decides whether anything is wrong.
+                # 'origin'/'destination' or 'billing_country'/'shipping_country'
+                # share their WHOLE vocabulary by design — two roles of one entity
+                # type, nothing to report. A stray value appearing in a column it
+                # does not belong to shows up as a small minority of BOTH
+                # vocabularies. Overlap shape separates them without needing to
+                # know what the columns mean.
+                jaccard = len(shared) / len(vals_a | vals_b)
+                minority = (len(shared) / len(vals_a) < CATEGORY_LEAK_MAX_SHARE
+                            and len(shared) / len(vals_b) < CATEGORY_LEAK_MAX_SHARE)
+                sample = ", ".join(sorted(shared)[:4])
+                more = f" (+{len(shared) - 4} more)" if len(shared) > 4 else ""
+
+                if jaccard >= CATEGORY_SAME_DOMAIN_JACCARD:
+                    # Same value domain. Only worth a word if the columns are also
+                    # row-for-row identical, which makes one of them redundant.
+                    try:
+                        identical = bool(df[col_a].equals(df[col_b]))
+                    except Exception:  # noqa: BLE001
+                        identical = False
+                    if identical:
+                        notes.append(f"  '{col_a}' and '{col_b}' are identical row for row — "
+                                     f"one is a redundant copy, not a second dimension.")
+                    continue
+                if minority:
+                    notes.append(f"  '{col_a}' and '{col_b}' share {len(shared)} value(s): "
+                                 f"{sample}{more}. That is a small minority of both columns, which "
+                                 f"usually means a value belonging to one has leaked into the "
+                                 f"other — verify it is a real '{col_a}' before reporting it as "
+                                 f"one. (If these columns legitimately draw on the same list, "
+                                 f"ignore this.)")
+        return notes
+
     def validate_dataset(self, name: str) -> str:
         """
         Profile a loaded dataset and return a structured diagnostic report:
@@ -189,6 +260,12 @@ class DataPipeline:
                 outlier_report.append(f"  {col}: {n_outliers} values with |z| > {OUTLIER_Z_THRESHOLD}")
         lines.append("\noutliers (z-score method, numeric columns):")
         lines.extend(outlier_report if outlier_report else ["  none detected"])
+
+        # ── categorical consistency ─────────────────────────────
+        overlaps = self._overlapping_categories(df)
+        lines.append("\ncategory consistency:")
+        lines.extend(overlaps if overlaps else
+                     ["  nothing to flag — no value looks out of place in its column"])
 
         # ── pandera schema check, if available ───────────────────
         try:
@@ -247,12 +324,18 @@ class DataPipeline:
                 df.to_csv(full, index=False)
         except Exception as e:
             return f"Error saving dataset: {type(e).__name__}: {e}"
+        # the file now matches the registry copy, so reading it back is safe —
+        # record that so tooling does not warn about a correct action
+        self.saved[name] = (full, df.shape)
         return f"Saved '{name}' ({df.shape[0]} rows) to {path}"
 
     # ───────────────────────────────────────────────── internals
 
     def _register(self, name: str, df: pd.DataFrame, source: str) -> str:
         self.datasets[name] = df
+        # remembering the origin lets tooling warn when code re-reads the raw
+        # file after a cleaned version already exists in the registry
+        self.sources[name] = source
         return (
             f"Loaded '{name}' from {source}  "
             f"({df.shape[0]} rows × {df.shape[1]} cols)\n"

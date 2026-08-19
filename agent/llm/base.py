@@ -9,6 +9,7 @@ Ollama, vLLM, or Gemini requires zero changes anywhere else.
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -102,8 +103,40 @@ class LLMError(Exception):
 
 RETRYABLE_MARKERS = (
     "overloaded", "rate_limit", "rate limit", "429", "500", "502", "503",
-    "529", "timeout", "timed out", "connection", "temporarily",
+    "529", "timeout", "timed out", "connection", "temporarily", "404",
+    "provider returned error",
 )
+
+# Failures that are permanent: retrying re-sends the same bad request and can
+# only fail again. A context-length overflow is the classic one — it wastes
+# five attempts AND five times the tokens.
+PERMANENT_MARKERS = (
+    "maximum context length", "context_length_exceeded", "too many tokens",
+    "reduce the length", "invalid_api_key", "authentication", "unauthorized",
+    "permission denied", "billing", "insufficient_quota",
+)
+
+MAX_RETRY_DELAY = 60.0      # a model being restarted takes minutes, not seconds
+_RETRY_AFTER_RE = re.compile(r"retry[-_ ]?after[\"']?\s*[:=]\s*[\"']?(\d+(?:\.\d+)?)", re.I)
+
+
+def _retry_after_seconds(error: Exception) -> Optional[float]:
+    """Honour the provider's own Retry-After hint when it sends one — it knows
+    how long the wait actually is, and guessing shorter just wastes attempts."""
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers:
+        for key in ("retry-after", "Retry-After", "x-ratelimit-reset-after"):
+            try:
+                value = headers.get(key)
+            except AttributeError:
+                value = None
+            if value:
+                try:
+                    return max(0.0, float(value))
+                except (TypeError, ValueError):
+                    pass
+    match = _RETRY_AFTER_RE.search(str(error))
+    return float(match.group(1)) if match else None
 
 
 class BaseLLMClient:
@@ -119,7 +152,11 @@ class BaseLLMClient:
     {"type": "tool_result", ...} dicts. Providers convert as needed.
     """
 
-    MAX_RETRIES = 5
+    # 6 attempts with the widened backoff below covers roughly two minutes.
+    # That is deliberate: an upstream model being restarted takes minutes, and
+    # the old ~17-second window guaranteed failure. Permanent errors now exit
+    # immediately, so a long window costs nothing when the request is hopeless.
+    MAX_RETRIES = 6
 
     def __init__(self, model: str):
         self.model = model
@@ -147,13 +184,48 @@ class BaseLLMClient:
             except Exception as e:  # noqa: BLE001 — provider SDKs raise many types
                 last_err = e
                 msg = str(e).lower()
-                retryable = any(m in msg for m in RETRYABLE_MARKERS)
-                if not retryable or attempt == self.MAX_RETRIES - 1:
+                permanent = next((m for m in PERMANENT_MARKERS if m in msg), None)
+                if permanent:
+                    raise LLMError(
+                        f"LLM call failed permanently ({permanent}) — retrying cannot help: {e}"
+                    ) from e
+                if not any(m in msg for m in RETRYABLE_MARKERS) or attempt == self.MAX_RETRIES - 1:
                     break
-                delay = min(2 ** attempt + random.random(), 30)
-                print(f"[llm] transient error ({type(e).__name__}); retry {attempt + 1}/{self.MAX_RETRIES} in {delay:.1f}s")
+                if "404" in msg:
+                    reason = self._diagnose_404()
+                    if reason:
+                        raise LLMError(f"LLM call failed permanently: {reason}") from e
+                # exponential backoff, but wide enough to outlast a model being
+                # restarted upstream; the provider's own hint always wins
+                delay = _retry_after_seconds(e)
+                if delay is None:
+                    delay = min(4 * 2 ** attempt + random.random(), MAX_RETRY_DELAY)
+                delay = min(delay, MAX_RETRY_DELAY)
+                print(f"[llm] transient error ({type(e).__name__}); "
+                      f"retry {attempt + 1}/{self.MAX_RETRIES} in {delay:.1f}s")
                 time.sleep(delay)
         raise LLMError(f"LLM call failed after retries: {last_err}") from last_err
+
+    def _diagnose_404(self) -> Optional[str]:
+        """A 404 means either 'no such model' (permanent) or 'cannot reach it
+        right now' (temporary). Ask the endpoint which, so a typo fails in one
+        second instead of after several minutes of pointless waiting.
+
+        Returns a message when the failure is permanent, else None.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            return None
+        try:
+            available = [m.id for m in client.models.list().data]
+        except Exception:  # noqa: BLE001 — cannot tell; assume temporary
+            return None
+        if not available or self.model in available:
+            return None
+        close = [m for m in available if self.model.split("/")[-1][:12] in m][:5]
+        hint = f" Did you mean: {close}?" if close else f" {len(available)} models are available."
+        return (f"model '{self.model}' does not exist at this endpoint.{hint} "
+                f"Fix SWARN_DEPLOYED_MODEL in .env.")
 
     # convenience: plain text completion (no tools)
     def complete(self, system: str, prompt: str, **kw) -> str:

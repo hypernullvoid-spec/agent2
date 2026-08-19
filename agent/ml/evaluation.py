@@ -371,6 +371,101 @@ class ModelEvaluator:
         lines.insert(0, f"Comparison chart saved to {rel_path}")
         return "\n".join(lines)
 
+    # ───────────────────────────────────────────────── feature importance
+
+    def feature_importance(self, artifact_id: str) -> str:
+        """
+        Rank the features of a trained artifact by importance: tree-based
+        candidates report feature_importances_, linear/logistic candidates
+        report |coef|. Saves a horizontal bar plot to workspace/plots/.
+        """
+        artifact, err = self._get_artifact_or_error(artifact_id)
+        if err:
+            return err
+
+        model = artifact["model"]
+        cols = artifact.get("feature_columns", [])
+        imp = None
+        if hasattr(model, "feature_importances_"):
+            imp = np.asarray(model.feature_importances_, dtype=float)
+        elif hasattr(model, "coef_"):
+            coef = np.asarray(model.coef_, dtype=float)
+            imp = np.abs(coef.mean(axis=0)) if coef.ndim > 1 else np.abs(coef)
+        if imp is None or len(cols) != len(imp):
+            return (
+                f"Error: no feature importance available for '{artifact_id}' "
+                f"(candidate '{artifact.get('candidate')}') — this model type "
+                "doesn't expose feature_importances_ or coef_."
+            )
+
+        order = np.argsort(imp)[::-1]
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        top = order[:20][::-1]  # show best at top of the bar chart
+        fig, ax = plt.subplots(figsize=(8, max(3, 0.4 * len(top))))
+        ax.barh([cols[i] for i in top], imp[top], color="steelblue")
+        ax.set_xlabel("importance")
+        ax.set_title(f"Feature importance — {artifact_id}")
+
+        rel_path = self._save_fig(fig, f"{self._safe_name(artifact_id)}_importance.png")
+
+        lines = [f"Feature importance — '{artifact_id}'", ""]
+        for rank, i in enumerate(order, start=1):
+            lines.append(f"  {rank:>2}. {cols[i]:<28} {imp[i]:.4f}")
+        lines.append(f"\nChart saved to {rel_path}")
+        return "\n".join(lines)
+
+    # ───────────────────────────────────────────────── prediction
+
+    def predict(self, artifact_id: str, rows: list) -> str:
+        """
+        Run in-session inference on a trained artifact. `rows` is a list of
+        dicts keyed by the model's feature column names (see list_trained_models /
+        evaluate output); a single dict is also accepted.
+        """
+        artifact, err = self._get_artifact_or_error(artifact_id)
+        if err:
+            return err
+
+        cols = artifact.get("feature_columns", [])
+        if not cols:
+            return f"Error: artifact '{artifact_id}' has no recorded feature_columns."
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not rows or not isinstance(rows, list):
+            return "Error: pass rows as a dict (single row) or a list of dicts."
+        try:
+            X = pd.DataFrame(rows)
+        except Exception as e:
+            return f"Error building input frame: {type(e).__name__}: {e}"
+        missing = [c for c in cols if c not in X.columns]
+        if missing:
+            return (
+                f"Error: input is missing feature column(s): {missing}.\n"
+                f"Required columns: {cols}"
+            )
+        extra = [c for c in X.columns if c not in cols]
+        try:
+            X = X[cols].astype(float)
+        except (TypeError, ValueError) as e:
+            return f"Error: feature values must be numeric: {type(e).__name__}: {e}"
+
+        model = artifact["model"]
+        try:
+            preds = self._predict(model, X)
+        except Exception as e:
+            return f"Error running model.predict(): {type(e).__name__}: {e}"
+
+        lines = [f"Predictions for '{artifact_id}' ({len(preds)} row(s)):"]
+        for i, p in enumerate(preds):
+            lines.append(f"  row {i}: {p:.4f}")
+        if extra:
+            lines.append(f"\n(ignored extra input columns: {extra})")
+        return "\n".join(lines)
+
     # ───────────────────────────────────────────────── internals
 
     _safe_name = staticmethod(safe_filename)
