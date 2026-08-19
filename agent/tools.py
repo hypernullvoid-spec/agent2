@@ -36,13 +36,26 @@ Phase breakdown:
              file. (Phase 11's multi-agent roles live in roles.py +
              orchestrator.py, not here — they reuse this same registry,
              just with a restricted allow-list per role.)
-  Phase 13 index_pdf, index_image, index_audio
+  Phase 13 index_pdf, extract_pdf_structured, index_image, index_audio
            ← backed by multimodal_rag.py. These feed the SAME ChromaDB
              collection Phase 3's index_project/search_codebase use —
              search_codebase (unmodified) returns a blend of code, PDF
              text/tables, image OCR/captions, and audio transcripts,
              ranked purely by relevance, with the chunk `type` field
              telling you which modality a given result came from.
+             extract_pdf_structured is the one exception to that: it
+             does NOT index anything, returning a PDF's tables as real
+             rows/columns for callers that need the data itself rather
+             than a searchable blob (see `swarn extract-pdf`).
+  Capability swarn_doc_inspect
+           ← backed by swarn/capabilities/doc_intelligence.py, the first
+             tool that lives outside this package. Capabilities are
+             self-contained units with their own schemas and artifacts
+             (see swarn/__init__.py); the registry just registers them,
+             so the import below is lazy and one-directional. This one
+             extracts fields WITH their page coordinates and renders an
+             annotated image — the "where did this number come from"
+             question Phase 13's extractors cannot answer.
   Phase 14 prepare_finetune_dataset, fine_tune, merge_and_export_model,
            list_finetune_runs
            ← backed by finetuning.py. LoRA/QLoRA fine-tuning of a small
@@ -999,6 +1012,114 @@ def index_pdf(path: str) -> str:
 
 @tool(
     description=(
+        "Extract a PDF's contents as STRUCTURED JSON — per page, the prose "
+        "text plus every detected table as real rows/columns (a 'rows' grid "
+        "and, when the header row is usable, 'records' of {column: value}). "
+        "Use this instead of index_pdf when you need the DATA — to compute "
+        "on it, reshape it, or pull specific fields — rather than making the "
+        "PDF searchable. Unlike index_pdf this does no embedding and touches "
+        "no vector store, so it needs no model download and works offline. "
+        "Note that tables are found by visual structure (ruled lines/column "
+        "gaps); a table drawn as plain positioned text won't be detected and "
+        "its content appears in that page's 'text' instead."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the PDF file (relative to the workspace, or absolute)."},
+            "tables_only": {"type": "boolean", "description": "Omit each page's prose text and return only the detected tables. Useful for a text-heavy PDF where the tables are all you need and the full text would flood the context."},
+            "page": {"type": "integer", "description": "Extract only this single 1-based page number instead of the whole document."},
+        },
+        "required": ["path"],
+    },
+)
+def extract_pdf_structured(path: str, tables_only: bool = False, page: int = None) -> str:
+    """Returns a JSON string — see MultiModalIndexer.extract_pdf_structured for the shape."""
+    import json
+    from agent.multimodal_rag import get_multimodal_indexer
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    result = get_multimodal_indexer().extract_pdf_structured(path)
+
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    if page is not None:
+        kept = [p for p in result["pages"] if p["page"] == page]
+        if not kept:
+            return f"Error: page {page} is out of range ({result['n_pages']} pages in {path})."
+        result["pages"] = kept
+        # Recount so the summary fields describe what was actually returned,
+        # not the whole document the caller chose to narrow away from.
+        result["n_tables"] = sum(len(p["tables"]) for p in kept)
+
+    if tables_only:
+        result["pages"] = [{k: v for k, v in p.items() if k != "text"}
+                            for p in result["pages"] if p["tables"]]
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool(
+    description=(
+        "Convert an ENTIRE PDF into a structured document tree — not just its "
+        "tables. Returns sections (with headings and nesting level) containing "
+        "typed blocks: paragraph, list (with items split out), key_values, and "
+        "table (rows + records), all in reading order — plus the document "
+        "title, the PDF's metadata, and a flat 'fields' map of every "
+        "label->value pair found anywhere, including ones embedded in prose "
+        "like 'Invoice date: 2024-09-17'. Prefer this over "
+        "extract_pdf_structured when you need the whole document as data "
+        "rather than page-level text blobs; prefer index_pdf when you only "
+        "need the PDF to be searchable. Structure is inferred from layout "
+        "(font sizes, boldness, position) with no LLM call and no network."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the PDF file (relative to the workspace, or absolute)."},
+            "page": {"type": "integer", "description": "Keep only blocks from this 1-based page. Sections with nothing left are dropped."},
+        },
+        "required": ["path"],
+    },
+)
+def extract_pdf_document(path: str, page: int = None) -> str:
+    """Returns a JSON string — see MultiModalIndexer.extract_pdf_document for the shape."""
+    import json
+    from agent.multimodal_rag import get_multimodal_indexer
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    result = get_multimodal_indexer().extract_pdf_document(path)
+
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    if page is not None:
+        if not 1 <= page <= result["n_pages"]:
+            return f"Error: page {page} is out of range ({result['n_pages']} pages in {path})."
+        kept = []
+        for section in result["sections"]:
+            blocks = [b for b in section["blocks"] if b["page"] == page]
+            # A section whose heading is on this page is kept even with no
+            # blocks left — the heading itself is content the caller asked for.
+            if blocks or section["page"] == page:
+                kept.append({**section, "blocks": blocks})
+        result["sections"] = kept
+        result["counts"] = {
+            "sections":   len(kept),
+            "paragraphs": sum(1 for s in kept for b in s["blocks"] if b["type"] == "paragraph"),
+            "lists":      sum(1 for s in kept for b in s["blocks"] if b["type"] == "list"),
+            "tables":     sum(1 for s in kept for b in s["blocks"] if b["type"] == "table"),
+            "fields":     len(result["fields"]),
+        }
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool(
+    description=(
         "Index an image into the same searchable index Phase 3's "
         "index_project uses — OCR extracts any visible text, and (if a "
         "CLIP-family model is available) the image itself is embedded so "
@@ -1048,6 +1169,229 @@ def index_audio(path: str, model_size: str = "base") -> str:
     if not os.path.isabs(path):
         path = os.path.join(WORKSPACE_DIR, path)
     return get_multimodal_indexer().index_audio(path, model_size=model_size)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CAPABILITY TOOLS — swarn/capabilities/*
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    description=(
+        "Extract key entities from a document (PDF or image) TOGETHER WITH the "
+        "bounding box on the page where each value was read, and write an "
+        "annotated copy of the page with those boxes drawn on it, colour-coded "
+        "by confidence (green >0.85, amber 0.60-0.85, red <0.60). Returns JSON: "
+        "each field's name, value, confidence, and normalized box (0.0-1.0 "
+        "coordinates), plus the path to the annotated image. "
+        "Use this instead of extract_pdf_document when WHERE a value came from "
+        "matters — invoice/KYC/financial review, verifying a suspicious number, "
+        "or producing evidence a human can audit at a glance. Use "
+        "extract_pdf_document instead when you only need a PDF's text and "
+        "tables as data and do not care about page coordinates; note this tool "
+        "also handles scanned images, which extract_pdf_document cannot. "
+        "With no vision-model API key configured it returns a deterministic "
+        "sample extraction (backend='mock'), so treat backend='mock' in the "
+        "result as 'this is demo data, not this document's real contents'."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the PDF or image (relative to the workspace, or absolute)."},
+            "page": {"type": "integer", "description": "1-based page number for a PDF. Defaults to 1. Ignored for images."},
+            "annotate": {"type": "boolean", "description": "Write the annotated image. Default true. Set false to skip the rendering when you only need the fields and coordinates."},
+            "backend": {"type": "string", "description": "Force an extraction backend: 'vlm' (vision model API), 'ocr' (local tesseract), or 'mock'. Omit to auto-select."},
+            "include_raw": {"type": "boolean", "description": "Include the extractor's full untouched response. Verbose — only useful when debugging a bad extraction."},
+        },
+        "required": ["path"],
+    },
+)
+def swarn_doc_inspect(path: str, page: int = 1, annotate: bool = True,
+                      backend: str = None, include_raw: bool = False) -> str:
+    """Thin wrapper over swarn.capabilities.doc_intelligence.inspect_document.
+
+    Imported lazily so a missing pydantic/Pillow install is an error string
+    from this one tool rather than an import-time crash for every tool in the
+    registry — the same rule the Phase 13 tools above follow."""
+    import json
+
+    try:
+        from swarn.capabilities.doc_intelligence import inspect_document
+    except ImportError as exc:
+        return (f"Error: doc inspection needs 'pip install pydantic pillow' ({exc}).")
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    result = inspect_document(path, page_number=page, annotate=annotate,
+                              backend=backend, include_raw=include_raw)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool(
+    description=(
+        "Convert a PDF's tables into CSV file(s) on disk and return what was "
+        "written. Handles both ruled tables and BORDERLESS ones (a dataset "
+        "printed to PDF, a statement, a report appendix) by inferring columns "
+        "from text alignment when nothing is ruled — which is why this "
+        "succeeds on files that yield no tables at all otherwise. Consecutive "
+        "pages of the same width are written as ONE table; a change of shape "
+        "starts a new file. Use this when the user wants a PDF's data as CSV, "
+        "or when you need to load a PDF's table with pandas — convert first, "
+        "then load_csv the result. Returns JSON naming every file written."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path":        {"type": "string", "description": "Path to the PDF (relative to the workspace, or absolute)."},
+            "out_path":    {"type": "string", "description": "Write everything to this ONE csv file."},
+            "out_dir":     {"type": "string", "description": "Write one csv per table into this directory."},
+            "split_fused": {"type": "boolean", "description": "Split cells holding two values with no separator (e.g. '124.9833yes'). Ignored when it would misalign rows."},
+        },
+        "required": ["path"],
+    },
+)
+def swarn_pdf_to_csv(path: str, out_path: str = None, out_dir: str = None,
+                     split_fused: bool = False) -> str:
+    """Thin wrapper over swarn.capabilities.doc_csv.pdf_to_csv."""
+    import json
+
+    try:
+        from swarn.capabilities.doc_csv import pdf_to_csv
+        from swarn.capabilities.doc_intelligence import DocumentIntelligenceError
+    except ImportError as exc:
+        return f"Error: PDF → CSV needs 'pip install pdfplumber pydantic pillow' ({exc})."
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    if out_path and not os.path.isabs(out_path):
+        out_path = os.path.join(WORKSPACE_DIR, out_path)
+    if out_dir and not os.path.isabs(out_dir):
+        out_dir = os.path.join(WORKSPACE_DIR, out_dir)
+
+    try:
+        result = pdf_to_csv(path, out_path=out_path, out_dir=out_dir,
+                            split_fused=split_fused)
+    except DocumentIntelligenceError as exc:
+        return f"Error: {exc}"
+
+    if not result.paths:
+        return ("No table-shaped content found — nothing was written. The PDF may be "
+                "prose (try extract_pdf_document) or scanned with no text layer.")
+    return json.dumps({
+        "paths":    result.paths,
+        "n_tables": len(result.grids),
+        "n_rows":   result.n_rows,
+        "columns":  [g.n_cols for g in result.grids],
+        "strategy": sorted({g.strategy for g in result.grids}),
+        "n_fused_cells": result.n_fused,
+        "summary":  result.summary(),
+    }, indent=2, ensure_ascii=False)
+
+
+@tool(
+    description=(
+        "Parse a document (PDF or image) ONCE into a stored structured "
+        "representation — word-level text with bounding boxes, per-word "
+        "confidence, line ids, page dimensions, and tables — persisted as JSON. "
+        "Later swarn_doc_ask calls about the same file reuse it instead of "
+        "re-reading the document, which matters most for scans (a full OCR pass "
+        "per question otherwise). Calling this is OPTIONAL: swarn_doc_ask "
+        "ingests automatically on first use. Call it explicitly to pre-warm a "
+        "document you are about to ask several questions about, or to report "
+        "what a document contains before asking anything."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path":    {"type": "string", "description": "Path to the PDF or image (relative to the workspace, or absolute)."},
+            "backend": {"type": "string", "description": "Force how the document is read: 'text' (PDF text layer) or 'ocr' (local tesseract). Omit to auto-select."},
+            "force":   {"type": "boolean", "description": "Re-parse even if this exact document content is already stored."},
+        },
+        "required": ["path"],
+    },
+)
+def swarn_doc_ingest(path: str, backend: str = None, force: bool = False) -> str:
+    """Thin wrapper over swarn.capabilities.doc_store.ingest_document."""
+    import json
+
+    try:
+        from swarn.capabilities.doc_intelligence import DocumentIntelligenceError
+        from swarn.capabilities.doc_store import ingest_document, load_for_file, store_path
+    except ImportError as exc:
+        return f"Error: document ingestion needs 'pip install pydantic pillow pdfplumber' ({exc})."
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    try:
+        document = load_for_file(path) if not force else None
+        reused = document is not None
+        if document is None:
+            document = ingest_document(path, backend=backend)
+    except DocumentIntelligenceError as exc:
+        return f"Error: {exc}"
+
+    return json.dumps({
+        "document_id": document.document_id,
+        "document_name": document.document_name,
+        "page_count": document.page_count,
+        "backend": document.backend,
+        "n_lines": document.n_lines(),
+        "n_words": document.n_words(),
+        "n_tables": sum(len(page.tables) for page in document.pages),
+        "stored_at": str(store_path(document.document_id)),
+        "ingested_at": document.ingested_at,
+        "already_stored": reused,
+    }, indent=2, ensure_ascii=False)
+
+
+@tool(
+    description=(
+        "Answer a specific QUESTION about a document (PDF or image), grounded in "
+        "the document's own text. Returns the answer plus the evidence it rests "
+        "on: each cited figure with its page, its verbatim quote, and its "
+        "bounding box, an annotated image with those figures boxed, and — when "
+        "the answer required arithmetic the document does not state directly "
+        "(a percentage change, a total, a ratio) — the computation, "
+        "independently re-evaluated. "
+        "Prefer this over swarn_doc_inspect when you have a QUESTION; prefer "
+        "swarn_doc_inspect when you want whatever fields a page holds. "
+        "IMPORTANT for interpreting the result: every quote is checked against "
+        "the document text, so a field with verified=false was NOT found where "
+        "the answer claimed and must not be relied on; likewise "
+        "computation_check starting with 'MISMATCH' means the arithmetic is "
+        "wrong. found=false means the document does not support an answer — "
+        "report that rather than substituting your own knowledge."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path":     {"type": "string", "description": "Path to the PDF or image (relative to the workspace, or absolute)."},
+            "question": {"type": "string", "description": "The question to answer about the document."},
+            "page":     {"type": "integer", "description": "Restrict to one 1-based page. Omit to search the whole document."},
+            "backend":  {"type": "string", "description": "Force how the document is read: 'text' (PDF text layer) or 'ocr' (local tesseract). Omit to auto-select."},
+            "include_raw": {"type": "boolean", "description": "Include the model's untouched response. Verbose; for debugging a bad answer."},
+        },
+        "required": ["path", "question"],
+    },
+)
+def swarn_doc_ask(path: str, question: str, page: int = None,
+                  backend: str = None, include_raw: bool = False) -> str:
+    """Thin wrapper over swarn.capabilities.doc_qa.answer_question."""
+    import json
+
+    try:
+        from swarn.capabilities.doc_qa import answer_question
+    except ImportError as exc:
+        return f"Error: document Q&A needs 'pip install pydantic pillow pdfplumber' ({exc})."
+
+    if not os.path.isabs(path):
+        path = os.path.join(WORKSPACE_DIR, path)
+    result = answer_question(path, question, page=page, backend=backend,
+                             include_raw=include_raw)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

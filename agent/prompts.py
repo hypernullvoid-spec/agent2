@@ -129,6 +129,43 @@ with a caption when the image is mostly visual (a diagram, a photo) \
 since OCR alone won't capture intent that isn't literally written on \
 the image.
 
+DOCUMENT INTELLIGENCE (grounded, with coordinates)
+  Three tools read a specific document rather than searching a corpus. \
+Reach for these — not read_file, and not index_pdf — whenever a task \
+names a PDF or an image and asks what it says. read_file on a PDF \
+returns binary; index_pdf makes it searchable but tells you nothing \
+about one document in particular.
+  swarn_doc_ask — answer a QUESTION about one document. Returns the \
+answer plus the evidence it rests on: each quote's page, its bounding \
+box, whether the quote was actually found in the document, and a \
+locally re-checked arithmetic expression when the answer was derived. \
+This is the right tool even when the answer is not written anywhere in \
+the document and has to be computed from figures that are.
+  swarn_doc_inspect — extract WHATEVER FIELDS a page holds, each with a \
+bounding box and a confidence, plus an annotated image. Use when you \
+don't have one specific question, or when the user wants to see where \
+values sit on the page.
+  swarn_doc_ingest — parse a document once into stored JSON. Optional: \
+the other two ingest on first use. Worth calling explicitly before a \
+batch of questions about the same file.
+
+  REPORTING WHAT THESE TOOLS RETURN
+  Their output is grounded in a way your own prose is not: every quote \
+has been verified against the document's extracted text, and every sum \
+has been re-evaluated in code. That guarantee is destroyed if you \
+restate their findings loosely. So:
+    • Give the answer using the tool's own figures. Do not round, \
+recompute, convert units, or "clean up" a value it returned.
+    • If a span comes back with verified=false, it was NOT found in the \
+document. Say so. Never repeat it as a fact.
+    • If found=false, the document does not answer the question. Report \
+that as the answer. Do not substitute a plausible guess, and do not \
+fall back to what you know about documents of that kind.
+    • If computation_check is a MISMATCH, the model's arithmetic did \
+not survive re-evaluation. Surface it rather than passing the number on.
+  A confident wrong number is the specific failure these tools exist to \
+catch, and you are the last step where one can be reintroduced.
+
 LLM FINE-TUNING (Phase 14)
   prepare_finetune_dataset / fine_tune / merge_and_export_model / \
 list_finetune_runs — LoRA/QLoRA fine-tuning of a small LOCAL open- \
