@@ -27,6 +27,7 @@ dependencies = [
     "pdfplumber>=0.11.0",
     "peft>=0.10.0",
     "pillow>=10.0.0",
+    "prompt-toolkit>=3.0.0",
     "pyarrow>=16.0.0",
     "pytesseract>=0.3.10",
     "python-dotenv>=1.0.0",
@@ -50,4 +51,16 @@ dependencies = [
 swarn = "agent.cli:main"
 
 [tool.setuptools]
-packages = ["agent", "agent.llm", "agent.search", "swarn", "swarn.capabilities"]
+# Discovered rather than listed: the hand-written list had drifted — it named
+# only agent/, agent.llm and agent.search, so an installed copy was missing
+# agent.core, agent.utils, agent.memory and the rest, and `swarn` worked only
+# from a source checkout. find_packages keeps this correct as subpackages are
+# added (agent.utils.classic and agent.utils.lain being the latest).
+[tool.setuptools.packages.find]
+include = ["agent*", "swarn*"]
+
+[tool.setuptools.package-data]
+# The lain theme's colours, branding and spinner frames live in YAML beside
+# the renderer that reads them; without this they are dropped from a wheel and
+# SWARN_THEME=lain fails at import.
+"agent.utils.lain" = ["theme.yaml"]

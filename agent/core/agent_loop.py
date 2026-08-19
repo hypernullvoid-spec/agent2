@@ -57,6 +57,7 @@ from agent.core.doom_loop       import DoomLoopDetector, WARNING as DOOM_WARNING
 from typing import Callable, Optional
 
 from agent.config import MAX_ITERATIONS, CONTEXT_CHAR_BUDGET
+from agent.core.approval_policy import requires_approval
 
 # How many steps from the cap to start telling the model to wrap up. Hitting the
 # cap yields NOTHING — no summary, no answer — however much useful work was done,
@@ -165,6 +166,26 @@ class AgentLoop:
         guardrail_policy:    Optional["object"]              = None,   # agent.observability.observability.GuardrailPolicy
         observability_hooks: Optional["object"]              = None,   # agent.observability.observability.ObservabilityHooks
         on_tool_result:      Optional[Callable[[str, dict, str], None]] = None,
+        # Interactive mode passes a callback taking (tool_name, tool_input)
+        # and returning True to run the call, False to refuse it. None — the
+        # default, and what headless mode uses — auto-approves everything,
+        # which is what makes a headless run scriptable: a prompt on stdin
+        # nobody is watching would simply hang.
+        approval_callback:   Optional[Callable[[str, dict], bool]] = None,
+        # Per-instance override of the SWARN_MAX_ITERATIONS default, so
+        # --max-iterations can be an ordinary CLI flag.
+        max_iterations:      Optional[int]                   = None,
+        # When True, run() carries the message history across calls — that is
+        # what makes the REPL a conversation rather than a series of
+        # unrelated one-shots, so "now add tests for that" resolves against
+        # the previous turn.
+        keep_history:        bool                            = False,
+        # When True, every run() records into ONE session for the life of this
+        # AgentLoop instead of opening a new one per call — one interactive
+        # sitting, one session. Kept separate from keep_history because they
+        # answer different questions (what the model sees vs. what gets
+        # recorded); the REPL happens to want both.
+        single_session:      bool                            = False,
     ):
         self.llm           = LLMClient(model=model)
         self.model         = model
@@ -188,6 +209,118 @@ class AgentLoop:
         # RAW result deliberately — self-correction hints and guardrail
         # banners are messages to the model, not to the reader.
         self._on_tool_result = on_tool_result
+        self._approve       = approval_callback
+        self.max_iterations = max_iterations or MAX_ITERATIONS
+        self.keep_history   = keep_history
+        self.single_session = single_session
+        # Carried across run() calls only when keep_history is set.
+        self.history: list = []
+        # The sitting's Session when single_session is set; None otherwise and
+        # between sittings. See _acquire_session().
+        self._session = None
+
+    # ─────────────────────────────────────────────────── session management
+
+    def _acquire_session(self, task: str):
+        """Return the Session this run() should record into.
+
+        Default (headless, one task per process): a fresh session per run,
+        which is what a scripted invocation wants — one command, one trace,
+        one exit code.
+
+        single_session (the interactive REPL): the whole sitting is ONE
+        session, and each question becomes a USER_TURN step inside it. A REPL
+        conversation is one continuous piece of work — the follow-ups only
+        make sense against what came before, and `keep_history` already feeds
+        them to the model that way — so splitting it into one session per
+        question produced a history full of fragments that could not be read
+        on their own. New REPL, new session.
+        """
+        if not self.single_session:
+            return self._store.new_session(task=task, model=self.model)
+
+        if self._session is None:
+            self._session = self._store.new_session(task=task, model=self.model)
+            return self._session
+
+        # A continuing sitting: mark the turn boundary so the trace can be
+        # read back as a conversation rather than one long run of tool calls.
+        self._session.add_step(
+            StepKind.USER_TURN,
+            task=task,
+            turn=len(self._session.user_turns()) + 1,
+        )
+        # Each turn reopens the session: outcome/summary describe the turn in
+        # flight, and a stale "complete" from the previous one would otherwise
+        # persist if this turn died before setting its own.
+        self._session.outcome = None
+        self._session.summary = None
+        return self._session
+
+    def close_session(self) -> None:
+        """Finalize the current sitting's session (interactive shutdown, /new).
+
+        Only meaningful with single_session: _finish() closes the session
+        itself in the default one-run-per-session mode. Safe to call when
+        there is nothing open, so the REPL's exit paths need not check.
+        """
+        if self._session is None:
+            return
+        session, self._session = self._session, None
+        # A sitting that ended without the last turn setting an outcome (the
+        # user just typed /quit) is neither a success nor a failure.
+        if session.outcome is None:
+            session.outcome = "ended"
+        self._store.close_session(session)
+
+    # ───────────────────────────────────────────── conversation management
+
+    def reset_conversation(self) -> None:
+        """Drop the carried-over message history (interactive `/new`)."""
+        self.history = []
+
+    def compact_conversation(self) -> tuple[int, int]:
+        """Compact the carried-over history in place (interactive `/compact`).
+
+        Unlike the automatic pass in run(), this ignores CONTEXT_CHAR_BUDGET
+        and always compacts: the user asked for it explicitly. Returns
+        (chars_before, chars_after) so the caller can report the saving.
+        """
+        before = _message_chars(self.history)
+        for message in self.history[:-_KEEP_RECENT_MESSAGES]:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                    continue
+                text = str(block.get("content", ""))
+                if len(text) > _TRUNC_HEAD + _TRUNC_TAIL + 100:
+                    block["content"] = (
+                        text[:_TRUNC_HEAD]
+                        + f"\n… [{len(text) - _TRUNC_HEAD - _TRUNC_TAIL} chars compacted] …\n"
+                        + text[-_TRUNC_TAIL:]
+                    )
+        return before, _message_chars(self.history)
+
+    def _finish(self, session, messages: list) -> dict:
+        """Close the session and hand back the result.
+
+        keep_history is applied HERE rather than at each return site so every
+        exit path — completion, abort, cancellation, iteration cap — leaves
+        the conversation in the same consistent state.
+        """
+        if self.keep_history:
+            self.history = messages
+        if self.single_session:
+            # The sitting is still open — the next question belongs in this
+            # same session. Checkpoint so the turn survives a crash, and let
+            # close_session() finalize when the REPL exits.
+            self._store.checkpoint_session(session)
+        else:
+            self._store.close_session(session)
+        return {"outcome": session.outcome, "summary": session.summary,
+                "session_id": session.id}
 
     # ─────────────────────────────────────────────────── public entry point
 
@@ -208,7 +341,7 @@ class AgentLoop:
         it's created, so an async caller (the dashboard's job registry) can
         learn the session id long before run() returns.
         """
-        session  = self._store.new_session(task=task, model=self.model)
+        session  = self._acquire_session(task)
         # [frontend-api] NEW: report the session id to the caller immediately.
         # The dashboard's job registry passes on_session so the web frontend
         # can match this run's live websocket steps to its job id right away,
@@ -218,7 +351,11 @@ class AgentLoop:
                 on_session(session)
             except Exception:  # noqa: BLE001 — an observer must not kill the run
                 pass
-        messages = [{"role": "user", "content": task}]
+        # keep_history: earlier turns stay in the prompt, so a follow-up like
+        # "now add tests for it" resolves against what just happened.
+        messages = ([*self.history] if self.keep_history else []) + [
+            {"role": "user", "content": task}
+        ]
         doom     = DoomLoopDetector()
 
         ui.session_header(session.id, task, role=self.role_name)
@@ -230,7 +367,7 @@ class AgentLoop:
         except Exception:  # noqa: BLE001
             pass
 
-        for step_num in range(1, MAX_ITERATIONS + 1):
+        for step_num in range(1, self.max_iterations + 1):
 
             # [frontend-api] NEW: cooperative cancellation (dashboard job API).
             # POST /api/jobs/{id}/cancel sets this threading.Event; we check it
@@ -240,8 +377,7 @@ class AgentLoop:
                 ui.warn("cancelled", "stop requested — ending run before next step")
                 session.outcome = "cancelled"
                 session.add_step(StepKind.ERROR, reason="cancelled_by_user", step=step_num)
-                self._store.close_session(session)
-                return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
+                return self._finish(session, messages)
 
             # ── V3: context compaction ──────────────────────────────
             n_compacted = compact_messages(messages)
@@ -250,19 +386,23 @@ class AgentLoop:
 
             # ── LLM call ────────────────────────────────────────────
             current_tools = get_tool_definitions(self._tool_names)
-            if self._observe:
-                with self._observe.llm_call_span(step_num, self.model):
+            # The spinner covers the one part of a step with nothing to
+            # show: waiting on the model. It clears itself before any
+            # reasoning/tool output is printed below.
+            with ui.thinking(role=self.role_name):
+                if self._observe:
+                    with self._observe.llm_call_span(step_num, self.model):
+                        response = self.llm.call(
+                            system   = self.system_prompt,
+                            messages = messages,
+                            tools    = current_tools,
+                        )
+                else:
                     response = self.llm.call(
                         system   = self.system_prompt,
                         messages = messages,
                         tools    = current_tools,
                     )
-            else:
-                response = self.llm.call(
-                    system   = self.system_prompt,
-                    messages = messages,
-                    tools    = current_tools,
-                )
 
             # ── reasoning text (PLAN) ───────────────────────────────
             for block in response.content:
@@ -291,11 +431,9 @@ class AgentLoop:
                     session.summary   = final_text
                     session.outcome   = "complete"
                     session.add_step(StepKind.COMPLETE, summary=session.summary)
-                    ui.info("agent answered in plain text — marked complete.")
                 else:
                     session.outcome = "no_tool_use"
-                self._store.close_session(session)
-                return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
+                return self._finish(session, messages)
 
             # ── execute each tool call ───────────────────────────────
             tool_results = []
@@ -313,6 +451,33 @@ class AgentLoop:
                     tool  = block.name,
                     input = block.input,
                 )
+
+                # ── approval gate (interactive mode) ────────────────
+                # Only side-effecting tools are gated; read-only calls run
+                # unprompted, or the REPL would ask about every list_files.
+                # A refusal is fed back as a tool result rather than raised:
+                # the model should learn the call was declined and pick
+                # another route, not have the whole run torn down.
+                if self._approve and requires_approval(block.name):
+                    if not self._approve(block.name, block.input):
+                        refusal = (
+                            f"Error: the user declined to approve "
+                            f"'{block.name}'. Do not retry it — take a "
+                            f"different approach, or ask what to do instead."
+                        )
+                        session.add_step(
+                            StepKind.TOOL_RESULT,
+                            step   = step_num,
+                            tool   = block.name,
+                            result = refusal,
+                        )
+                        ui.warn("declined", f"{block.name} was not approved")
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": block.id,
+                            "content":     refusal,
+                        })
+                        continue
 
                 # Execute — wrapped in an observability span if configured
                 if self._observe:
@@ -423,7 +588,7 @@ class AgentLoop:
                     break   # don't run remaining tool calls in the batch
 
             # ── handle exit conditions ───────────────────────────────
-            budget = _budget_notice(step_num, MAX_ITERATIONS)
+            budget = _budget_notice(step_num, self.max_iterations)
             if budget and tool_results and not finished:
                 # Without this the loop just stops dead at the cap and the user
                 # gets nothing, however much good work was already done.
@@ -442,17 +607,14 @@ class AgentLoop:
                     reason = "max_consecutive_errors_reached",
                     step   = step_num,
                 )
-                self._store.close_session(session)
-                return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
+                return self._finish(session, messages)
 
             if finished:
                 session.outcome = "complete"
-                self._store.close_session(session)
-                return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
+                return self._finish(session, messages)
 
         # ── iteration cap ────────────────────────────────────────────────
-        ui.error(f"Stopped after {MAX_ITERATIONS} iterations without finishing.")
+        ui.error(f"Stopped after {self.max_iterations} iterations without finishing.")
         session.outcome = "max_iterations"
         session.add_step(StepKind.ERROR, reason="max_iterations_reached")
-        self._store.close_session(session)
-        return {"outcome": session.outcome, "summary": session.summary, "session_id": session.id}
+        return self._finish(session, messages)
