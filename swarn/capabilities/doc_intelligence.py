@@ -1880,7 +1880,7 @@ def MultiModalIndexer_kv_match(text: str):
     Imported lazily and wrapped here so the entity engine stays importable —
     and unit-testable — without pulling `agent.*` in at module load, per the
     one-way wiring rule in swarn/__init__.py."""
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
     return MultiModalIndexer._kv_match(text)
 
 

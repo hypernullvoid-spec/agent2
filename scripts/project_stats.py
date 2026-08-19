@@ -80,7 +80,7 @@ def _registered_tools() -> list[str]:
     """Prefer the live registry; fall back to parsing @tool decorators."""
     sys.path.insert(0, str(ROOT))
     try:
-        from agent.tools import TOOL_REGISTRY  # noqa: PLC0415
+        from agent.runtime.tools import TOOL_REGISTRY  # noqa: PLC0415
         return list(TOOL_REGISTRY)
     except Exception:  # noqa: BLE001 — deps may not be installed
         src = (ROOT / "agent" / "tools.py").read_text(encoding="utf-8")

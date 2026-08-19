@@ -7,6 +7,39 @@ name = "swarn"
 version = "2.0.0"
 description = "A from-scratch autonomous AI engineering agent — single deployed-model endpoint (see agent/llm/router.py), Docker-optional sandbox, AIDE-style solution tree search."
 requires-python = ">=3.10"
+dependencies = [
+    "accelerate>=0.28.0",
+    "chromadb>=0.5.0",
+    "datasets>=2.18.0",
+    "fastapi>=0.110.0",
+    "joblib>=1.3.0",
+    "lightgbm>=4.3.0",
+    "matplotlib>=3.8.0",
+    "mcp>=1.0.0",
+    "numpy>=1.26.0",
+    "openai>=1.30.0",
+    "openpyxl>=3.1.0",
+    "opentelemetry-api>=1.24.0",
+    "opentelemetry-sdk>=1.24.0",
+    "optuna>=3.6.0",
+    "pandas>=2.2.0",
+    "pandera>=0.20.0",
+    "pdfplumber>=0.11.0",
+    "peft>=0.10.0",
+    "pillow>=10.0.0",
+    "pyarrow>=16.0.0",
+    "pytesseract>=0.3.10",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "scikit-learn>=1.4.0",
+    "sentence-transformers>=2.7.0",
+    "sqlalchemy>=2.0.0",
+    "torch>=2.2.0",
+    "typer>=0.12.0",
+    "uvicorn[standard]>=0.29.0",
+    "websockets>=12.0",
+    "xgboost>=2.0.0",
+]
 
 [project.scripts]
 # This is what makes `swarn run "..."` / `swarn serve` work as a bare shell

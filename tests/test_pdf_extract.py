@@ -17,7 +17,7 @@ import json
 import os
 import tempfile
 
-from agent.multimodal_rag import MultiModalIndexer
+from agent.memory.multimodal_rag import MultiModalIndexer
 
 
 def _have(*mods) -> bool:
@@ -138,7 +138,7 @@ def test_tool_wrapper_returns_json_and_honors_filters():
     if not _have("reportlab", "pdfplumber"):
         print("    (skipped: needs reportlab + pdfplumber)")
         return
-    from agent.tools import extract_pdf_structured
+    from agent.runtime.tools import extract_pdf_structured
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf = os.path.join(tmp, "invoice.pdf")
@@ -157,7 +157,7 @@ def test_tool_wrapper_returns_json_and_honors_filters():
 
 
 def test_tool_wrapper_reports_missing_file_as_error_string():
-    from agent.tools import extract_pdf_structured
+    from agent.runtime.tools import extract_pdf_structured
     assert extract_pdf_structured("/definitely/not/here.pdf").startswith("Error:")
 
 
@@ -343,7 +343,7 @@ def test_document_tool_wrapper_json_and_page_filter():
     if not _have("reportlab", "pdfplumber"):
         print("    (skipped: needs reportlab + pdfplumber)")
         return
-    from agent.tools import extract_pdf_document
+    from agent.runtime.tools import extract_pdf_document
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf = os.path.join(tmp, "report.pdf")

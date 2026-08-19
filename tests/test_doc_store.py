@@ -534,11 +534,11 @@ def test_cli_ask_reports_the_document_it_answered_from():
 def test_agent_tool_is_registered_and_reports_the_store():
     if not _HAVE_PDF:
         return _skip("needs pydantic + Pillow + pdfplumber + reportlab")
-    from agent.tools import TOOL_REGISTRY, get_tool_definitions
+    from agent.runtime.tools import TOOL_REGISTRY, get_tool_definitions
 
     assert "swarn_doc_ingest" in TOOL_REGISTRY
     definition = next(d for d in get_tool_definitions() if d["name"] == "swarn_doc_ingest")
     assert definition["input_schema"]["required"] == ["path"]
 
-    from agent.tools import swarn_doc_ingest
+    from agent.runtime.tools import swarn_doc_ingest
     assert swarn_doc_ingest("/definitely/not/here.pdf").startswith("Error:")

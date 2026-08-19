@@ -30,17 +30,20 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
+
 from agent.llm.base import BaseLLMClient
+
+# Load .env before reading SWARN_DEPLOYED_* below, so every entry point
+# (swarn CLI, dashboard, MCP server) honors it — not just main.py.
+load_dotenv()
 
 # ── deployed model configuration (single source of truth) ────────────────
 # TODO(production): replace these test-deployment defaults with the
 # production deployed model endpoint (see banner above).
-DEPLOYED_MODEL_NAME = os.environ.get("SWARN_DEPLOYED_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-DEPLOYED_BASE_URL = os.environ.get(
-    "SWARN_DEPLOYED_BASE_URL",
-    "https://openrouter.ai/api/v1",  # TEST: Qwen on Modal
+from agent.config import (
+    DEPLOYED_MODEL as DEPLOYED_MODEL_NAME, DEPLOYED_BASE_URL, DEPLOYED_API_KEY,
 )
-DEPLOYED_API_KEY = os.environ.get("SWARN_DEPLOYED_API_KEY", "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")
 
 # Kept as the canonical default-model string other modules import for
 # display/logging defaults (journal, dashboard, CLI help).

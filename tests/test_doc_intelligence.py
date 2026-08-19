@@ -564,7 +564,7 @@ def test_process_all_pages_annotates_every_page_separately():
 def test_tool_wrapper_returns_json_and_reports_errors_as_strings():
     if not (_HAVE_PYDANTIC and _HAVE_PIL):
         return _skip("needs pydantic + Pillow")
-    from agent.tools import TOOL_REGISTRY, swarn_doc_inspect
+    from agent.runtime.tools import TOOL_REGISTRY, swarn_doc_inspect
     from swarn.capabilities.doc_intelligence import create_mock_document
 
     assert "swarn_doc_inspect" in TOOL_REGISTRY
@@ -974,7 +974,7 @@ def test_ocr_backend_on_a_generated_image_returns_only_real_values():
 def test_tool_definition_is_exported_to_the_agent_schema():
     if not _HAVE_PYDANTIC:
         return _skip("needs pydantic")
-    from agent.tools import get_tool_definitions
+    from agent.runtime.tools import get_tool_definitions
 
     definition = next(
         (d for d in get_tool_definitions() if d["name"] == "swarn_doc_inspect"), None)

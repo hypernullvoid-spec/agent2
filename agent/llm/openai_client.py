@@ -14,6 +14,7 @@ import os
 import uuid
 from typing import Optional
 
+from agent import config
 from agent.llm.base import BaseLLMClient, LLMResponse, TextBlock, ToolUseBlock, Usage
 
 
@@ -22,7 +23,7 @@ class OpenAICompatClient(BaseLLMClient):
         super().__init__(model)
         from openai import OpenAI  # lazy import — only needed for this backend
         self.client = OpenAI(
-            api_key=api_key or os.environ.get("OPENAI_API_KEY") or "not-needed",  # local servers ignore it
+            api_key=api_key or config.openai_api_key() or "not-needed",  # local servers ignore it
             base_url=base_url,
         )
 
@@ -112,6 +113,10 @@ class OpenAICompatClient(BaseLLMClient):
                 kwargs["tool_choice"] = tc
 
         resp = self.client.chat.completions.create(**kwargs)
+        if not resp.choices:                                                                                                                                                                                     
+           raise RuntimeError(                                                                                                                                                                                  
+               "LLM returned no choices (empty response) — upstream rate_limit/overload, retrying"                                                                                                              
+           ) 
         choice = resp.choices[0]
         msg = choice.message
 

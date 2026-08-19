@@ -56,7 +56,7 @@ def _stored(path: str):
 
 
 def _tree(path: str) -> dict:
-    from agent.multimodal_rag import get_multimodal_indexer
+    from agent.memory.multimodal_rag import get_multimodal_indexer
     return get_multimodal_indexer().extract_pdf_document(path)
 
 
@@ -141,7 +141,7 @@ def test_two_fields_on_one_row_are_both_found():
 def test_a_colon_prefixed_cell_is_the_previous_cells_value():
     if not _HAVE_DEPS:
         return _skip("needs pdfplumber + reportlab + pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_segments("Bill No | : 382 | Bill Month | : JUL") == \
         ["Bill No : 382", "Bill Month : JUL"]
@@ -150,7 +150,7 @@ def test_a_colon_prefixed_cell_is_the_previous_cells_value():
 def test_a_value_never_keeps_a_leading_colon():
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_match("Subdivision | : CHINHAT") == \
         ("Subdivision", "CHINHAT")
@@ -159,7 +159,7 @@ def test_a_value_never_keeps_a_leading_colon():
 def test_all_pairs_on_a_line_are_returned():
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     pairs = MultiModalIndexer._kv_pairs("Bill No | : 382 | Bill Month | : JUL")
     assert pairs == {"Bill No": "382", "Bill Month": "JUL"}
@@ -168,7 +168,7 @@ def test_all_pairs_on_a_line_are_returned():
 def test_a_line_with_no_pipes_behaves_exactly_as_before():
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_match("Invoice date: 2024-09-17") == \
         ("Invoice date", "2024-09-17")
@@ -180,7 +180,7 @@ def test_a_line_with_no_pipes_behaves_exactly_as_before():
 def test_a_bilingual_label_keeps_its_latin_half():
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_match("देय ितिथ / Due Date : 17-JUL-2026") == \
         ("Due Date", "17-JUL-2026")
@@ -191,7 +191,7 @@ def test_a_label_that_already_validates_is_never_rewritten():
     # "Net" would quietly change what the field means.
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_match("Net / Gross: 100") == ("Net / Gross", "100")
 
@@ -199,7 +199,7 @@ def test_a_label_that_already_validates_is_never_rewritten():
 def test_a_label_with_no_latin_half_is_still_rejected():
     if not _HAVE_DEPS:
         return _skip("needs pydantic")
-    from agent.multimodal_rag import MultiModalIndexer
+    from agent.memory.multimodal_rag import MultiModalIndexer
 
     assert MultiModalIndexer._kv_match("देय ितिथ / िबल संखया : 17-JUL") is None
 

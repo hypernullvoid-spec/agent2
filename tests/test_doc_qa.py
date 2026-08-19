@@ -440,7 +440,7 @@ def test_evidence_image_is_written_from_the_real_page():
 def test_answer_question_wrapper_and_agent_tool():
     if not _HAVE_PDF:
         return _skip("needs pydantic + Pillow + pdfplumber + reportlab")
-    from agent.tools import TOOL_REGISTRY, get_tool_definitions
+    from agent.runtime.tools import TOOL_REGISTRY, get_tool_definitions
 
     assert "swarn_doc_ask" in TOOL_REGISTRY
     definition = next(d for d in get_tool_definitions() if d["name"] == "swarn_doc_ask")

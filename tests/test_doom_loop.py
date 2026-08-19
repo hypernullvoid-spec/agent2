@@ -1,7 +1,7 @@
 """Doom-loop detection + context compaction (the ReAct-loop V3 upgrades)."""
 
-from agent.agent_loop import compact_messages
-from agent.doom_loop import DoomLoopDetector
+from agent.core.agent_loop import compact_messages
+from agent.core.doom_loop import DoomLoopDetector
 
 
 def test_three_identical_calls_trip():

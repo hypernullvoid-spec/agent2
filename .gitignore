@@ -120,6 +120,12 @@ sync-test.txt
 .claude/settings.local.json
 .claude/memory/
 CLAUDE.local.md
+.~lock.*#
+
+# data-analyst: generated parquet store (keep the small test fixture only)
+data-analyst/store/*.parquet
+!data-analyst/store/test_data.parquet
+data-analyst/uploads/
 
 # Generated document-intelligence output
 *_evidence.png
