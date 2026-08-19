@@ -45,13 +45,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from agent.model_training import get_model_trainer
+from agent.ml.model_training import get_model_trainer
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
+from agent.paths import WORKSPACE_DIR, PLOTS_SUBDIR, safe_filename
 
-PLOTS_SUBDIR = "plots"   # all Phase 9 figures land in workspace/plots/
 
 
 class ModelEvaluator:
@@ -376,9 +373,7 @@ class ModelEvaluator:
 
     # ───────────────────────────────────────────────── internals
 
-    @staticmethod
-    def _safe_name(artifact_id: str) -> str:
-        return "".join(c if c.isalnum() or c in "_-" else "_" for c in artifact_id)
+    _safe_name = staticmethod(safe_filename)
 
 
 # ─── singleton, matching the rest of the codebase ──────────────────────────────

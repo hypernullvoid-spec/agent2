@@ -12,7 +12,7 @@ tools.py keeps calling get_sandbox().exec_python(...) -> str unchanged.
 
 from typing import Optional
 
-from agent.execution import (  # noqa: F401 — re-exported for existing imports
+from agent.runtime.execution import (  # noqa: F401 — re-exported for existing imports
     WORKSPACE_DIR, get_backend, close_backend,
 )
 

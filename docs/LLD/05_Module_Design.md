@@ -6,7 +6,7 @@ error handling → extension points. (Class-level detail is in
 
 ---
 
-## `agent/agent_loop.py`
+## `agent/core/agent_loop.py`
 
 - **Purpose:** the ReAct control loop; the only module whose control flow evolves across
   phases.
@@ -25,7 +25,7 @@ error handling → extension points. (Class-level detail is in
 - **Extension points:** constructor injection of policies; `system_prompt`/`tool_names` for
   new roles.
 
-## `agent/tools.py`
+## `agent/runtime/tools.py`
 
 - **Purpose:** the tool registry and every built-in tool definition.
 - **Public API:** `tool(description, schema)` decorator; `TOOL_REGISTRY: dict[str, dict]`;
@@ -45,7 +45,7 @@ error handling → extension points. (Class-level detail is in
   `mcp_integration.py` (writes to `TOOL_REGISTRY`), `main.py`/`cli.py` (`index_project`).
 - **Extension point:** add a `@tool`-decorated function (see [20_Extension_Guide.md](20_Extension_Guide.md)).
 
-## `agent/prompts.py`
+## `agent/messaging/prompts.py`
 
 - **Purpose:** the single-agent `SYSTEM_PROMPT` — operating loop, self-correction contract,
   full tool catalogue with per-phase workflows, workspace rules, ambiguity policy.
@@ -54,7 +54,7 @@ error handling → extension points. (Class-level detail is in
 - **Fragility:** renaming the `━━━ Core operating loop ━━━`, `━━━ Available tools ━━━`, or
   `━━━ Workspace ━━━` headers breaks `roles.py` **at import time**.
 
-## `agent/llm/` (package) and `agent/llm_client.py`
+## `agent/llm/` (package) and `agent/llm/llm_client.py`
 
 - **`base.py`** — normalized content blocks; `Usage` token accounting (`input/output/
   cache_read/calls`, `add()`, `summary()`); `LLMResponse` (`.text` join, `.tool_uses()`);
@@ -81,7 +81,7 @@ error handling → extension points. (Class-level detail is in
 - **Extension:** a new backend = subclass `BaseLLMClient`, implement `_call_api`, and give
   `router.create_client` a way to select it (currently requires editing `router.py`).
 
-## `agent/execution.py` and `agent/sandbox.py`
+## `agent/runtime/execution.py` and `agent/runtime/sandbox.py`
 
 - **Purpose:** run agent-generated code. `execution.py` is the real implementation;
   `sandbox.py` is the legacy string-API facade the ReAct tools use.
@@ -101,7 +101,7 @@ error handling → extension points. (Class-level detail is in
 - **Consumers:** tools `run_python/run_shell/install_package` (process-wide backend via
   `sandbox.py`); `search/runner.py` (fresh `make_backend(run_workspace)` per run).
 
-## `agent/memory.py`
+## `agent/memory/memory.py`
 
 - **Purpose:** structured per-run traces ("sessions") + recall.
 - **Public API:** `StepKind` enum (PLAN/TOOL_CALL/TOOL_RESULT/CORRECTION/COMPLETE/ERROR);
@@ -116,7 +116,7 @@ error handling → extension points. (Class-level detail is in
 - **Callers:** `agent_loop.py`, tools `list_sessions`/`recall_session`, REPL/CLI history
   commands, dashboard REST endpoints (which also read `store._index` directly).
 
-## `agent/knowledge.py`
+## `agent/memory/knowledge.py`
 
 - **Purpose:** cross-run self-improvement.
 - **Public API:** `KnowledgeStore(root=None)` — root resolution: arg →
@@ -134,7 +134,7 @@ error handling → extension points. (Class-level detail is in
   returns empty values — "no DB, no playbook, no API key → empty strings, never an
   exception into the search loop".
 
-## `agent/self_correction.py`, `agent/doom_loop.py`, `agent/observability.py`
+## `agent/core/self_correction.py`, `agent/core/doom_loop.py`, `agent/observability/observability.py`
 
 Covered in depth in [14_Error_Handling.md](14_Error_Handling.md) and
 [16_Security.md](16_Security.md). Summary:
@@ -152,7 +152,7 @@ Covered in depth in [14_Error_Handling.md](14_Error_Handling.md) and
   default, OTLP gRPC if endpoint given); `llm_call_span`/`tool_call_span` context managers;
   no-op when OTel missing.
 
-## `agent/context_engine.py` and `agent/multimodal_rag.py`
+## `agent/memory/context_engine.py` and `agent/memory/multimodal_rag.py`
 
 - `ContextEngine`: lazy init of sentence-transformers `all-MiniLM-L6-v2` + ChromaDB
   `PersistentClient(.chroma/)` collection `"codebase"` (cosine). `index_directory` walks,
@@ -211,7 +211,7 @@ Covered in depth in [14_Error_Handling.md](14_Error_Handling.md) and
   checkpoints), `merge_and_export` (merged standalone dir or adapter-only). Run state in
   `self._runs` (in-memory only).
 
-## `agent/mcp_integration.py`
+## `agent/integrations/mcp_integration.py`
 
 - **Purpose:** MCP *client* — consume external MCP servers as tools.
 - **Design:** one background daemon thread runs a persistent asyncio loop
@@ -225,7 +225,7 @@ Covered in depth in [14_Error_Handling.md](14_Error_Handling.md) and
   `disconnect_server`, `shutdown` (never called by any entry point), `get_mcp_manager()`.
 - **Timeouts:** `DEFAULT_CALL_TIMEOUT_S = 60` per tool call; 30s connect; 15s disconnect.
 
-## `agent/orchestrator.py`, `agent/roles.py`, `agent/ui.py`, `agent/dashboard.py`, `agent/mcp_server.py`, `agent/cli.py`, `main.py`
+## `agent/core/orchestrator.py`, `agent/core/roles.py`, `agent/utils/ui.py`, `agent/web/dashboard.py`, `agent/integrations/mcp_server.py`, `agent/cli.py`, `main.py`
 
 Covered in [04_Agent_Lifecycle.md](04_Agent_Lifecycle.md), [03_Startup_Sequence.md](03_Startup_Sequence.md), and [13_APIs.md](13_APIs.md).
 `ui.py` specifics: module-level Rich `Console(highlight=False)`; role accent colors

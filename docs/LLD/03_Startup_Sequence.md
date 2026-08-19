@@ -47,7 +47,7 @@ Step-by-step (`main.py:71–216`):
    is stopped on any exit.
 4. `ui.banner(...)` prints capabilities, the resolved endpoint, and the workspace path.
    Note: `WORKSPACE_DIR` was already created as a **side effect of importing
-   `agent.tools`** (`tools.py:74–77` runs `os.makedirs` at import).
+   `agent.runtime.tools`** (`tools.py:74–77` runs `os.makedirs` at import).
 5. `_show_recent_sessions(3)` — instantiates the `SessionStore` singleton (creates
    `sessions/`, loads `index.json`).
 6. Constructs the long-lived policies and one `AgentLoop` (which constructs an `LLMClient`
@@ -74,21 +74,21 @@ Each sub-command then lazily imports and wires its subsystem:
 | `team` | `Orchestrator(model, include_tester=not --no-tester, GuardrailPolicy())` → `run(task)` → print report markdown → exit 0 iff `final_outcome == "complete"` |
 | `solve` | Validates `--data` dir (unless `--resume`); builds `SearchConfig` from flags (`steps`, `time_limit`, `drafts`, `exec_timeout`, `workers`, `token_budget`, `use_knowledge`/`reflect` = not `--no-learn`, models); `run_search(task, data, config, resume_run_id)`; exit 0 iff a best node exists |
 | `sessions` / `recall` | `get_session_store().list_sessions(n)` / `.recall_as_text(id)` |
-| `index` | `agent.tools.index_project(path)` |
+| `index` | `agent.runtime.tools.index_project(path)` |
 | `playbook` | `KnowledgeStore().playbook()`; `--clear` deletes `playbook.md` |
 | `guardrail-benchmark` | `get_benchmark_harness().run()` |
-| `serve` | `uvicorn.run("agent.dashboard:app", host, port)` — the dashboard module is imported by uvicorn, not here |
-| `mcp-serve` | `agent.mcp_server.main()` → `mcp.run()` (stdio) |
+| `serve` | `uvicorn.run("agent.web.dashboard:app", host, port)` — the dashboard module is imported by uvicorn, not here |
+| `mcp-serve` | `agent.integrations.mcp_server.main()` → `mcp.run()` (stdio) |
 
 Notably, **no observability hooks are wired in the CLI** — `SWARN_ENABLE_TRACING` is only
 honored by `main.py`'s REPL. `GuardrailPolicy` *is* wired in `run`/`team`.
 
 ## 3. `swarn serve` — dashboard startup
 
-Files: `agent/dashboard.py`
+Files: `agent/web/dashboard.py`
 
-1. uvicorn imports `agent.dashboard`, which imports `agent.llm` (endpoint config) and
-   `agent.memory`, and constructs the module-level `app = FastAPI(...)` and
+1. uvicorn imports `agent.web.dashboard`, which imports `agent.llm` (endpoint config) and
+   `agent.memory.memory`, and constructs the module-level `app = FastAPI(...)` and
    `manager = ConnectionManager()`.
 2. FastAPI `startup` event (`dashboard.py:176–180`):
    - `manager.bind_to_running_loop(asyncio.get_running_loop())` — stores the loop and
@@ -103,7 +103,7 @@ Files: `agent/dashboard.py`
 
 ## 4. `swarn mcp-serve` — MCP server startup
 
-Files: `agent/mcp_server.py`
+Files: `agent/integrations/mcp_server.py`
 
 1. Module import constructs `mcp = FastMCP("swarn")` and registers the four
    `@mcp.tool()` functions.
@@ -116,12 +116,12 @@ Files: `agent/mcp_server.py`
 
 | Module | Side effect at import |
 |---|---|
-| `agent/tools.py` | `os.makedirs(WORKSPACE_DIR, exist_ok=True)` |
+| `agent/runtime/tools.py` | `os.makedirs(WORKSPACE_DIR, exist_ok=True)` |
 | `agent/llm/router.py` | `load_dotenv()`; resolves `DEPLOYED_*` from env |
-| `agent/roles.py` | Slices `SYSTEM_PROMPT` via `str.index()` — raises `ValueError` at import if the `━━━` section markers are renamed in `prompts.py` |
-| `agent/agent_loop.py` | Reads `SWARN_MAX_ITERATIONS` and `SWARN_CONTEXT_CHAR_BUDGET` into module constants (env changes after import have no effect) |
-| `agent/execution.py` | Reads `SWARN_EXEC_TIMEOUT`, `SWARN_SANDBOX_IMAGE` into module constants |
-| `agent/memory.py` | Defines `SESSIONS_DIR` (creation deferred to `SessionStore.__init__`) |
+| `agent/core/roles.py` | Slices `SYSTEM_PROMPT` via `str.index()` — raises `ValueError` at import if the `━━━` section markers are renamed in `prompts.py` |
+| `agent/core/agent_loop.py` | Reads `SWARN_MAX_ITERATIONS` and `SWARN_CONTEXT_CHAR_BUDGET` into module constants (env changes after import have no effect) |
+| `agent/runtime/execution.py` | Reads `SWARN_EXEC_TIMEOUT`, `SWARN_SANDBOX_IMAGE` into module constants |
+| `agent/memory/memory.py` | Defines `SESSIONS_DIR` (creation deferred to `SessionStore.__init__`) |
 
 ## Shutdown
 

@@ -60,9 +60,9 @@ def run(
     # Imported lazily inside each command, not at module level — `swarn
     # --help` shouldn't need to construct an LLMClient (which reads the
     # API key from the environment) just to print usage text.
-    from agent.agent_loop import AgentLoop
-    from agent.self_correction import SelfCorrectionPolicy
-    from agent.observability import GuardrailPolicy
+    from agent.core.agent_loop import AgentLoop
+    from agent.core.self_correction import SelfCorrectionPolicy
+    from agent.observability.observability import GuardrailPolicy
 
     agent = AgentLoop(
         model=model,
@@ -70,7 +70,7 @@ def run(
         guardrail_policy=GuardrailPolicy(),
     )
     result = agent.run(task)
-    from agent import ui
+    from agent.utils import ui
     ui.console.print()
     ui.outcome(result["outcome"], result["session_id"], result.get("summary"))
     raise typer.Exit(code=0 if result["outcome"] == "complete" else 1)
@@ -83,8 +83,8 @@ def team(
     no_tester: bool = typer.Option(False, "--no-tester", help="Stop after Reviewer approval, skip the Tester stage."),
 ):
     """Run a one-off task through the Phase 11 Planner→Coder→Reviewer→Tester pipeline and exit."""
-    from agent.orchestrator import Orchestrator
-    from agent.observability import GuardrailPolicy
+    from agent.core.orchestrator import Orchestrator
+    from agent.observability.observability import GuardrailPolicy
 
     orchestrator = Orchestrator(
         model=model,
@@ -92,7 +92,7 @@ def team(
         guardrail_policy=GuardrailPolicy(),
     )
     result = orchestrator.run(task)
-    from agent import ui
+    from agent.utils import ui
     ui.console.print()
     ui.markdown(result["report_markdown"])
     raise typer.Exit(code=0 if result["final_outcome"] == "complete" else 1)
@@ -158,7 +158,7 @@ def sessions(
     limit: int = typer.Option(10, "--limit", "-n", help="Number of recent sessions to show."),
 ):
     """List recent sessions (Phase 5)."""
-    from agent.memory import get_session_store
+    from agent.memory.memory import get_session_store
     typer.echo(get_session_store().list_sessions(n=limit))
 
 
@@ -167,7 +167,7 @@ def recall(
     session_id: str = typer.Argument(..., help="A session ID (or unique prefix) from `swarn sessions`."),
 ):
     """Show one past session's full tool-call log (Phase 5)."""
-    from agent.memory import get_session_store
+    from agent.memory.memory import get_session_store
     typer.echo(get_session_store().recall_as_text(session_id))
 
 
@@ -176,7 +176,7 @@ def index(
     path: str = typer.Argument(..., help="Directory to index for semantic search (Phase 3)."),
 ):
     """Index a directory into the repo-RAG search index."""
-    from agent.tools import index_project
+    from agent.runtime.tools import index_project
     typer.echo(index_project(path))
 
 
@@ -189,7 +189,7 @@ def mcp_serve():
 
     Register with Claude Code:  claude mcp add swarn -- swarn mcp-serve
     """
-    from agent.mcp_server import main as serve_mcp
+    from agent.integrations.mcp_server import main as serve_mcp
     serve_mcp()
 
 
@@ -199,7 +199,7 @@ def playbook(
 ):
     """V3: show (or clear) the cross-run playbook — the lessons the agent
     has distilled from past search runs."""
-    from agent.knowledge import KnowledgeStore
+    from agent.memory.knowledge import KnowledgeStore
     store = KnowledgeStore()
     if clear:
         import os as _os
@@ -216,7 +216,7 @@ def playbook(
 @app.command(name="guardrail-benchmark")
 def guardrail_benchmark():
     """Run Phase 15's canned prompt-injection detection benchmark."""
-    from agent.observability import get_benchmark_harness
+    from agent.observability.observability import get_benchmark_harness
     typer.echo(get_benchmark_harness().run())
 
 
@@ -232,7 +232,7 @@ def serve(
     """
     import uvicorn
     typer.echo(f"[swarn] Dashboard starting at http://{host}:{port}  (Ctrl+C to stop)")
-    uvicorn.run("agent.dashboard:app", host=host, port=port, log_level="warning")
+    uvicorn.run("agent.web.dashboard:app", host=host, port=port, log_level="warning")
 
 
 def main():

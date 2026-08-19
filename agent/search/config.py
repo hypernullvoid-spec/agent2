@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+
+from agent import config as _cfg
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -22,7 +24,7 @@ class SearchConfig:
     token_budget: Optional[int] = None   # max total LLM tokens (in+out) for the run
 
     # parallelism — how many draft/debug/improve nodes run concurrently.
-    parallel_workers: int = field(default_factory=lambda: int(os.environ.get("SWARN_SEARCH_WORKERS", "1")))
+    parallel_workers: int = field(default_factory=lambda: _cfg.search_workers())
 
     # tree policy
     num_drafts: int = 4                  # independent initial solutions
@@ -33,8 +35,8 @@ class SearchConfig:
     # models — every non-"mock:" spec is hard-routed to the DEPLOYED endpoint
     # configured in agent/llm/router.py ("PRODUCTION ENDPOINT — CHANGE HERE"),
     # so these fields are display/log values plus the mock switch for tests.
-    code_model: str = field(default_factory=lambda: os.environ.get("SWARN_CODE_MODEL", _default_model()))
-    feedback_model: str = field(default_factory=lambda: os.environ.get("SWARN_FEEDBACK_MODEL", _default_model()))
+    code_model: str = field(default_factory=lambda: _cfg.code_model(_default_model()))
+    feedback_model: str = field(default_factory=lambda: _cfg.feedback_model(_default_model()))
     code_temperature: float = 0.7
     feedback_temperature: float = 0.2
 

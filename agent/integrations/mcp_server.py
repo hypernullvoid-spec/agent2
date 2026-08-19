@@ -16,9 +16,9 @@ Two execution modes, chosen per task:
   mode="auto"   solve when data_dir is given, agent otherwise
 
 Register with Claude Code:
-  claude mcp add swarn -- python -m agent.mcp_server
+  claude mcp add swarn -- python -m agent.integrations.mcp_server
 Or in any client's mcp.json:
-  {"mcpServers": {"swarn": {"command": "python", "args": ["-m", "agent.mcp_server"]}}}
+  {"mcpServers": {"swarn": {"command": "python", "args": ["-m", "agent.integrations.mcp_server"]}}}
 """
 
 from __future__ import annotations
@@ -80,9 +80,9 @@ def _run_task(rec: _TaskRecord, data_dir: str, steps: int, model: str):
             else:
                 rec.result = f"No working solution. Report: {result.report_path}"
         else:
-            from agent.agent_loop import AgentLoop
-            from agent.self_correction import SelfCorrectionPolicy
-            from agent.observability import GuardrailPolicy
+            from agent.core.agent_loop import AgentLoop
+            from agent.core.self_correction import SelfCorrectionPolicy
+            from agent.observability.observability import GuardrailPolicy
 
             # model arg is display-only — calls hard-route to the deployed
             # endpoint configured in agent/llm/router.py

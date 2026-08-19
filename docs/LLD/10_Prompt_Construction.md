@@ -2,7 +2,7 @@
 
 There are three prompt families, each built differently.
 
-## 1. Single-agent system prompt (`agent/prompts.py`)
+## 1. Single-agent system prompt (`agent/messaging/prompts.py`)
 
 `SYSTEM_PROMPT` is one static ~170-line string with `━━━`-delimited sections:
 
@@ -25,7 +25,7 @@ an OpenAI `system` message by `OpenAICompatClient._convert_messages`).
 The **user prompt** for the single agent is simply the raw task string; all subsequent
 turns are assistant blocks + `tool_result` blocks. No templating.
 
-## 2. Role prompts (`agent/roles.py`)
+## 2. Role prompts (`agent/core/roles.py`)
 
 Built **at import time** from `SYSTEM_PROMPT`:
 

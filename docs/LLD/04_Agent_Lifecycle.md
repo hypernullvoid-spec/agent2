@@ -4,7 +4,7 @@ Swarn has three agent lifecycles. All are synchronous, blocking, run-to-completi
 
 ---
 
-## A. The ReAct loop — `AgentLoop.run()` (`agent/agent_loop.py`)
+## A. The ReAct loop — `AgentLoop.run()` (`agent/core/agent_loop.py`)
 
 ### Construction
 
@@ -172,7 +172,7 @@ it on (`reflect = not --no-learn`), and the MCP server sets `reflect=True`. A pr
 
 ---
 
-## C. The multi-agent pipeline — `Orchestrator.run()` (`agent/orchestrator.py`)
+## C. The multi-agent pipeline — `Orchestrator.run()` (`agent/core/orchestrator.py`)
 
 ```mermaid
 flowchart TD

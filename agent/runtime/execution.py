@@ -26,10 +26,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
-DEFAULT_TIMEOUT = int(os.environ.get("SWARN_EXEC_TIMEOUT", "300"))
+from agent.paths import WORKSPACE_DIR
+from agent.config import DEFAULT_TIMEOUT, SANDBOX_IMAGE, sandbox_mode
 MAX_OUTPUT_CHARS = 50_000
-SANDBOX_IMAGE = os.environ.get("SWARN_SANDBOX_IMAGE", "python:3.11-slim")
 
 
 @dataclass
@@ -249,7 +248,7 @@ def _docker_available() -> bool:
 
 def make_backend(workspace: Optional[str] = None) -> ExecutionBackend:
     """Fresh backend (the search engine gives each run its own workspace)."""
-    forced = os.environ.get("SWARN_SANDBOX", "").lower()
+    forced = sandbox_mode()
     if forced == "subprocess":
         return SubprocessBackend(workspace)
     if forced == "docker":

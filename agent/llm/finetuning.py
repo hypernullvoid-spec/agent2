@@ -70,10 +70,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
-FINETUNE_SUBDIR = "finetune"   # workspace/finetune/<run_id>/ holds everything for one run
+from agent.paths import WORKSPACE_DIR, FINETUNE_SUBDIR, safe_filename
 
 DEFAULT_LORA_R = 8
 DEFAULT_LORA_ALPHA = 16
@@ -390,7 +387,7 @@ class FineTuner:
     # ───────────────────────────────────────────────── internals
 
     def _run_dir(self, run_id: str) -> str:
-        safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in run_id)
+        safe = safe_filename(run_id)
         return os.path.join(WORKSPACE_DIR, FINETUNE_SUBDIR, safe)
 
 

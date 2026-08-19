@@ -40,20 +40,13 @@ from typing import Optional
 
 import pandas as pd
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
+from agent.paths import WORKSPACE_DIR, safe_path as _safe_path
 
 MAX_PREVIEW_ROWS = 10
 OUTLIER_Z_THRESHOLD = 3.0
 
 
-def _safe_path(path: str) -> str:
-    """Same path guard as tools.py — datasets are loaded from inside the workspace."""
-    full = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
-    if not (full == WORKSPACE_DIR or full.startswith(WORKSPACE_DIR + os.sep)):
-        raise ValueError(f"Path '{path}' escapes the workspace directory")
-    return full
+# _safe_path lives in agent/paths.py — imported above under its original name.
 
 
 class DataPipeline:

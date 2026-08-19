@@ -32,11 +32,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from agent.data_pipeline import get_data_pipeline
+from agent.ml.data_pipeline import get_data_pipeline
 
-WORKSPACE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "workspace")
-)
+from agent.paths import WORKSPACE_DIR
 
 HIGH_CARDINALITY_THRESHOLD = 20   # categoricals above this → frequency-encoded, not OHE
 

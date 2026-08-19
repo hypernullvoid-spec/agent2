@@ -51,16 +51,17 @@ import shutil
 
 from dotenv import load_dotenv
 
-from agent                 import ui
-from agent.agent_loop      import AgentLoop
-from agent.sandbox         import close_sandbox
-from agent.self_correction import SelfCorrectionPolicy
-from agent.tools           import WORKSPACE_DIR
+from agent                     import config as agent_config
+from agent.utils                 import ui
+from agent.core.agent_loop      import AgentLoop
+from agent.runtime.sandbox         import close_sandbox
+from agent.core.self_correction import SelfCorrectionPolicy
+from agent.runtime.tools           import WORKSPACE_DIR
 
 
 def _show_recent_sessions(n: int = 3) -> None:
     """Print a short session history at startup if any sessions exist."""
-    from agent.memory import get_session_store
+    from agent.memory.memory import get_session_store
     store = get_session_store()
     if store._index:
         print(f"\nRecent sessions (last {min(n, len(store._index))}):")
@@ -107,17 +108,17 @@ def main():
     # tool results for prompt-injection patterns before Claude sees them).
     # Observability (OTel spans) is opt-in via env var — see module
     # docstring above for why it isn't on by default.
-    from agent.observability import GuardrailPolicy
+    from agent.observability.observability import GuardrailPolicy
     guardrails = GuardrailPolicy()
 
     observability_hooks = None
-    if os.environ.get("SWARN_ENABLE_TRACING") == "1":
-        from agent.observability import ObservabilityHooks
+    if agent_config.tracing_enabled():
+        from agent.observability.observability import ObservabilityHooks
         observability_hooks = ObservabilityHooks(
-            exporter_endpoint=os.environ.get("OTEL_EXPORTER_ENDPOINT")
+            exporter_endpoint=agent_config.otel_endpoint()
         )
         print("[agent] OpenTelemetry tracing enabled "
-              f"(exporting to {os.environ.get('OTEL_EXPORTER_ENDPOINT') or 'console'}).\n")
+              f"(exporting to {agent_config.otel_endpoint() or 'console'}).\n")
 
     agent = AgentLoop(
         correction_policy=policy,
@@ -149,13 +150,13 @@ def main():
         if lower.startswith("history"):
             parts = lower.split()
             n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
-            from agent.memory import get_session_store
+            from agent.memory.memory import get_session_store
             print(get_session_store().list_sessions(n=n))
             continue
 
         if lower.startswith("recall "):
             sid = task[7:].strip()
-            from agent.memory import get_session_store
+            from agent.memory.memory import get_session_store
             print(get_session_store().recall_as_text(sid))
             continue
 
@@ -165,7 +166,7 @@ def main():
 
         if lower.startswith("index "):
             path = task[6:].strip()
-            from agent.tools import index_project
+            from agent.runtime.tools import index_project
             print(index_project(path))
             continue
 
@@ -196,7 +197,7 @@ def main():
             # BOTH single-agent and team runs in one process, rather than
             # the team pipeline silently running unguarded.
             team_task = task[5:].strip()
-            from agent.orchestrator import Orchestrator
+            from agent.core.orchestrator import Orchestrator
             orchestrator = Orchestrator(
                 guardrail_policy=guardrails,
                 observability_hooks=observability_hooks,

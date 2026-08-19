@@ -54,11 +54,11 @@ agent_loop.py's own MAX_ITERATIONS guard at the single-agent level.
 from dataclasses import dataclass, field
 from typing import Optional
 
-from agent import ui
-from agent.agent_loop import AgentLoop
+from agent.utils import ui
+from agent.core.agent_loop import AgentLoop
 from agent.llm import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
-from agent.roles import get_role_config
-from agent.self_correction import SelfCorrectionPolicy
+from agent.core.roles import get_role_config
+from agent.core.self_correction import SelfCorrectionPolicy
 
 MAX_REVISION_CYCLES = 3   # Coder ⇄ Reviewer/Tester loop cap, mirrors AgentLoop.MAX_ITERATIONS
 
@@ -115,8 +115,8 @@ class Orchestrator:
         # NOTE: routed to the deployed endpoint (agent/llm/router.py) regardless.
         model: str = DEFAULT_MODEL,
         include_tester: bool = True,
-        guardrail_policy: Optional["object"] = None,        # agent.observability.GuardrailPolicy
-        observability_hooks: Optional["object"] = None,      # agent.observability.ObservabilityHooks
+        guardrail_policy: Optional["object"] = None,        # agent.observability.observability.GuardrailPolicy
+        observability_hooks: Optional["object"] = None,      # agent.observability.observability.ObservabilityHooks
     ):
         self.model = model
         self.include_tester = include_tester   # set False to stop after Reviewer approval
