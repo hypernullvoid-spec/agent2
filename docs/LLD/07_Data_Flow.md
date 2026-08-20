@@ -85,6 +85,33 @@ flowchart LR
 - Deployment's API schema is generated from `feature_columns` — the input contract is the
   training columns, sanitized to Python identifiers.
 
+### 3a. The analyst path off the same registry
+
+The same `DataPipeline.datasets` registry feeds a second, non-ML flow:
+
+```mermaid
+flowchart LR
+    REG[(DataPipeline.datasets)] -->|clean_dataset| PLAN[numbered cleaning plan<br/>NOTHING changed]
+    PLAN -->|apply_cleaning| HUMAN{{human approves<br/>all / none / op1 op3}}
+    HUMAN -->|approved ops only| CLEAN[("'name_clean' — a NEW dataset;<br/>the source is never mutated")]
+    CLEAN -->|analysis tools| EV[(recorded evidence:<br/>rankings, tests, charts)]
+    EV --> PNG2[workspace/plots/*.png]
+    EV -->|write_report| CHECK{narrative vs. evidence}
+    CHECK -->|contradiction| REJ[REFUSED with reasons]
+    CHECK -->|consistent| RPT[findings report]
+    REG -->|data_bridge| SBX[[run_python sandbox process:<br/>only the datasets the code names]]
+```
+
+- **Nothing is destroyed without a human.** `clean_dataset` only proposes; `apply_cleaning`
+  blocks, applies the approved subset, and writes a new dataset. `SWARN_AUTO_APPROVE`/`/yolo`
+  removes this gate.
+- **Evidence flows one way.** Analysis tools record what they measured; `write_report`
+  regenerates figures from that record and refuses a narrative that contradicts it — so the
+  numbers in the report cannot drift from the numbers that were computed.
+- **Crossing the process boundary.** The registry is in-process; `run_python` is not.
+  `data_bridge` materializes only the datasets the code mentions by name and binds them to
+  variables via a generated bootstrap.
+
 ## 4. RAG index data
 
 ```mermaid

@@ -80,7 +80,8 @@ graph LR
   `OTEL_EXPORTER_ENDPOINT` set (that exporter package is an on-demand install).
   Spans: `llm_call` (step, model, duration_ms) and `tool_call` (tool.name, step,
   duration_ms, tool.success). Missing SDK → recorded init error, silent no-op spans.
-  Only wired by `main.py` when `SWARN_ENABLE_TRACING=1`.
+  Wired by `cli._make_observability_hooks()` — REPL and headless alike — when
+  `SWARN_ENABLE_TRACING=1`.
 
 ## 7. ML/data libraries (in-process integrations)
 

@@ -88,10 +88,25 @@ workspace.
 | FTS5 query | Task words are wrapped in double quotes (`"word"`) and OR-joined; the token regex `[A-Za-z][A-Za-z0-9_]{2,}` excludes quote characters, preventing FTS syntax injection |
 | Dashboard HTML | Session/step data injected into the DOM via `innerHTML`/template literals without escaping (only `report_markdown` is `<`-escaped) — a task string containing HTML executes in the viewer's browser (self-XSS on localhost; relevant if `--host` is widened) |
 
-## 7. What does not exist (verified)
+## 7. Human-in-the-loop as a control (`agent/core/approval_policy.py`)
+
+Not a security boundary against a hostile model, but the control that keeps destructive
+*data* operations from running unreviewed:
+
+- `approval_policy.py` gates tool calls behind an approval callback. The REPL passes an
+  `_Approver`; **headless mode passes none**, so every tool call runs unprompted — headless
+  exists to be scriptable, and a prompt written to a stdin nobody is watching would hang.
+- `apply_cleaning` and `ask_human` block on the human inside the tool itself, independent of
+  the policy. `apply_cleaning` applies only the ops the human names and writes a new
+  `<name>_clean` dataset rather than mutating the source.
+- `SWARN_AUTO_APPROVE=1` and the REPL's `/yolo` bypass the gate — and with it the guarantee
+  that nothing destructive ran unreviewed. Both are explicit opt-ins.
+
+## 8. What does not exist (verified)
 
 - No authentication or authorization anywhere.
 - No encryption at rest (sessions, journals, knowledge DB are plaintext JSON/SQLite).
 - No audit log beyond the session traces themselves.
 - No rate limiting.
 - No egress restrictions on sandboxed code (Docker default network).
+- No approval gate in headless mode (documented above; deliberate, not an oversight).

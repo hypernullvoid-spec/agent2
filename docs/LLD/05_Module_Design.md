@@ -13,7 +13,7 @@ error handling → extension points. (Class-level detail is in
 - **Public API:** `AgentLoop(...)`, `AgentLoop.run(task) -> dict`;
   module functions `compact_messages(messages) -> int`, `_message_chars(messages)`;
   constants `MAX_ITERATIONS`, `CONTEXT_CHAR_BUDGET`.
-- **Callers:** `main.py` (REPL), `cli.py run`, `orchestrator.py` (per role),
+- **Callers:** `cli.py` (REPL + `run`), `orchestrator.py` (per role),
   `dashboard.py /api/run`, `mcp_server.py` (mode="agent").
 - **Dependencies:** `ui`, `agent.llm` (`DEFAULT_MODEL`), `llm_client.LLMClient`,
   `tools.get_tool_definitions/run_tool`, `prompts.SYSTEM_PROMPT`, `memory`,
@@ -31,7 +31,7 @@ error handling → extension points. (Class-level detail is in
 - **Public API:** `tool(description, schema)` decorator; `TOOL_REGISTRY: dict[str, dict]`;
   `get_tool_definitions(names=None) -> list[dict]` (Anthropic tools format);
   `run_tool(name, input) -> str`; `WORKSPACE_DIR`; `MCP_TOOL_PREFIX = "mcp_"`;
-  plus each tool function (also importable directly, e.g. `index_project` from `main.py`).
+  plus each tool function (also importable directly, e.g. `index_project` from `cli.py`).
 - **Internals worth knowing:**
   - `get_tool_definitions` allow-list semantics: `None` → everything; a list *containing
     `connect_mcp_server`* → the list **plus every `mcp_*` tool currently registered** (the
@@ -42,7 +42,8 @@ error handling → extension points. (Class-level detail is in
     (the exception is then stringified by `run_tool`).
   - Every tool body lazily imports its subsystem (`from agent.X import get_x`).
 - **Callers:** `agent_loop.py` (definitions + dispatch), `roles.py` (allow-lists),
-  `mcp_integration.py` (writes to `TOOL_REGISTRY`), `main.py`/`cli.py` (`index_project`).
+  `mcp_integration.py` and the analyst modules (all write to `TOOL_REGISTRY`), `cli.py`
+  (`index_project`).
 - **Extension point:** add a `@tool`-decorated function (see [20_Extension_Guide.md](20_Extension_Guide.md)).
 
 ## `agent/messaging/prompts.py`
@@ -225,7 +226,90 @@ Covered in depth in [14_Error_Handling.md](14_Error_Handling.md) and
   `disconnect_server`, `shutdown` (never called by any entry point), `get_mcp_manager()`.
 - **Timeouts:** `DEFAULT_CALL_TIMEOUT_S = 60` per tool call; 30s connect; 15s disconnect.
 
-## `agent/core/orchestrator.py`, `agent/core/roles.py`, `agent/utils/ui.py`, `agent/web/dashboard.py`, `agent/integrations/mcp_server.py`, `agent/cli.py`, `main.py`
+## Analyst layer — `agent/data_cleaner.py`, `data_analysis.py`, `data_report.py`, `workbook.py`
+
+- **Purpose:** turn the ML pipeline's dataset registry into something an *analyst* drives —
+  diagnose quality, get approval, chart, test, and write the findings up — rather than
+  something that only feeds a model.
+- **Registration:** each module owns a `_SWARN_TOOLS` dict of
+  `name -> (description, schema, fn)` and a `register_*()` function that inserts them into
+  `TOOL_REGISTRY`, skipping names already present. **Lazy on purpose:** importing
+  `agent.runtime.tools` must not drag in matplotlib, scipy and statsmodels for a caller that
+  only wanted `read_file`. The consequence is that code driving the registry directly must
+  call `register_*()` or these 20 tools will not exist.
+- **The approval contract (`data_cleaner.py`):** `clean_dataset` diagnoses and returns a
+  numbered plan, **changing nothing**. `apply_cleaning` blocks on the human, accepts
+  `all` / `none` / `op1 op3 op5` / `op4: factor=83.2`, applies only what was approved, and
+  writes a **new** `<name>_clean` dataset — the source is never mutated. Cross-field and
+  rule ops only add validation flag columns; they never delete. Thresholds come from
+  `SWARN_CLEAN_*` (see [11_Configuration.md](11_Configuration.md)).
+- **Why the analysis tools return prose (`data_analysis.py`):** every chart is saved as a
+  PNG *and* described in words, because the model cannot see the image it just produced. The
+  same reasoning drives the tools that exist to stop confident wrong answers:
+  `rank_by` (reading a top-N off a bar chart reorders near-ties), `check_subgroups` (a
+  pooled correlation can be true overall and reversed in every group), `compare_groups`
+  (is the gap significant or noise), `analyze_missing` (blanks that co-occur mark a
+  structurally different record set, so imputing them separately fabricates records), and
+  `analyze_multivalue` (list-valued cells must be split before they mean anything).
+- **The report is checked, not just rendered (`data_report.py`):** the narrative fields are
+  the model's, but figures, charts, the cleaning record and the limitations section are
+  generated from recorded evidence. A narrative contradicting what was measured — a
+  different top N than `rank_by` recorded, say — is **refused with reasons** rather than
+  written out.
+- **`workbook.py`:** `inspect_workbook` describes every sheet — shapes, columns, types,
+  sample rows, formulas, which sheets feed which — for a few hundred tokens at any workbook
+  size, because reading a multi-sheet workbook one sheet at a time hides the relationships
+  between tabs. `load_workbook` then registers all sheets as `<file>_<sheet>`.
+
+## `agent/data_bridge.py`
+
+- **Purpose:** make registry datasets reachable from `run_python`.
+- **The problem:** the registry lives in this process; `run_python` runs in a *separate*
+  one (fresh subprocess or container). The only route to a DataFrame used to be
+  `pd.read_csv()` — the exact stale read `run_python` then refused, leaving the model with a
+  correct prohibition and no correct alternative, so it retried the forbidden call until it
+  ran out of attempts.
+- **Design:** before the code runs, the datasets it **mentions by name** are written to the
+  workspace and bound to plain variables by a one-line generated bootstrap. Referencing
+  `orders` is enough; nothing else is materialized, so a session holding twenty datasets
+  pays only for the two a query touches.
+
+## `agent/task_router.py`
+
+- **Purpose:** routing for `swarn run`, the universal entry point.
+- **Why:** a bare document question is exactly what `swarn ask` already does end-to-end —
+  parse once, transcribe with line ids, verify every quote against the document, re-evaluate
+  the arithmetic locally, box the evidence. Sending it through the ReAct agent costs three or
+  more LLM calls to reach the same tool and, worse, the agent then **paraphrases** the
+  verified JSON. That paraphrase lands after all three of `doc_qa`'s defences have run, so an
+  unverified claim can re-enter at the last step — the exact failure the capability exists to
+  prevent.
+- **Asymmetric by design:** guessing "agent" for a fast-pathable question costs latency and
+  an extra paraphrase — annoying. Guessing "ask" for a task that needed to train a model or
+  write a file drops the work on the floor — broken. So the fast path is claimed only when
+  the task looks like a question **and** carries no sign of any other work.
+
+## `swarn/capabilities/` — document intelligence
+
+- **Purpose:** self-contained units of work with their own schemas, artifacts and CLI
+  surface, which the agent merely *registers*.
+- **Import direction is one-way and enforced by convention:**
+  `agent/runtime/tools.py` imports `swarn.capabilities.*`, never the reverse at import time.
+  A capability may reuse an `agent.*` helper — `doc_intelligence` borrows
+  `multimodal_rag`'s key/value line parser for its OCR backend — but only through a lazy
+  import inside the function that needs it, so a missing optional dependency stays a runtime
+  error string in one code path instead of a startup crash for the whole agent.
+- **Standalone requirement:** `python examples/demo_doc_inspector.py` must work without an
+  agent loop, an LLM client, or a vector store. Nothing is imported eagerly from
+  `capabilities/__init__.py` either — pulling in the package must not drag in Pillow,
+  pydantic or pdfplumber for a caller that wanted a different capability.
+- **Modules:** `doc_intelligence` (fields + bounding boxes + annotated PNG),
+  `doc_qa` (grounded answers with quoted, boxed evidence and local arithmetic),
+  `doc_store` (parse-once persistence, so repeat questions on a scan skip a full OCR pass),
+  `doc_csv` (tables → CSV, including borderless tables inferred from text alignment),
+  `doc_structure` (the section/block document tree).
+
+## `agent/core/orchestrator.py`, `agent/core/roles.py`, `agent/utils/ui.py`, `agent/web/dashboard.py`, `agent/integrations/mcp_server.py`, `agent/cli.py`
 
 Covered in [04_Agent_Lifecycle.md](04_Agent_Lifecycle.md), [03_Startup_Sequence.md](03_Startup_Sequence.md), and [13_APIs.md](13_APIs.md).
 `ui.py` specifics: module-level Rich `Console(highlight=False)`; role accent colors

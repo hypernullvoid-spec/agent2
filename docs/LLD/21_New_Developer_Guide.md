@@ -10,7 +10,7 @@ cp .env.example .env            # optional; defaults point at the test Qwen endp
 
 python tests/run_tests.py       # offline test suite (mock LLMs) — should pass first
 swarn --help
-python main.py                  # interactive REPL
+swarn                           # interactive REPL (python main.py is the same thing)
 ```
 
 No API key is needed for the default test endpoint. Docker is optional (subprocess

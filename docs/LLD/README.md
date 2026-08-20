@@ -2,9 +2,12 @@
 
 This documentation set is a **reverse-engineered, implementation-accurate** description of the
 Swarn autonomous ML-engineering agent as it exists in this repository. Every statement is
-derived from reading the actual source code (all ~11,000 lines of Python across `agent/`,
-`agent/llm/`, `agent/search/`, `main.py`, and `tests/`). Where behavior could not be
-determined from the implementation, the docs say so explicitly.
+derived from reading the actual source code across the `agent/` and `swarn/` packages,
+`main.py`, and `tests/`. Where behavior could not be determined from the implementation, the
+docs say so explicitly.
+
+Companion document: [../TOOLS.md](../TOOLS.md) — the user-facing catalog of all 75 agent
+tools with their arguments, the `swarn` CLI, the REPL commands, and the `SWARN_*` env vars.
 
 **Audience:** engineers joining the project who need to understand, maintain, debug, and
 extend the system without first reading the entire codebase.
@@ -18,7 +21,8 @@ New to the project? Read in this order:
 3. [02_System_Architecture.md](02_System_Architecture.md) — the big picture and component map
 4. [04_Agent_Lifecycle.md](04_Agent_Lifecycle.md) — the two agent paradigms (ReAct loop + tree search)
 5. [09_Tool_Execution.md](09_Tool_Execution.md) — the tool registry, the heart of the system
-6. [21_New_Developer_Guide.md](21_New_Developer_Guide.md) — onboarding walkthrough
+6. [../TOOLS.md](../TOOLS.md) — what the 75 tools actually do, and how to call them
+7. [21_New_Developer_Guide.md](21_New_Developer_Guide.md) — onboarding walkthrough
 
 ## Full index
 

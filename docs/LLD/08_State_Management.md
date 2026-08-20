@@ -38,7 +38,7 @@
 | `knowledge/runs.db` | SQLite FTS5 | `index_run` | `search_runs` | end of every knowledge-enabled run |
 | `.chroma/` | ChromaDB persistent store | index tools | `search_codebase` | on indexing |
 | `workspace/**` | agent-created files, plots/, deployments/, finetune/ | tools | tools/user | on demand |
-| `.env` | env overrides | user | `load_dotenv` (main.py + router import) | — |
+| `.env` | env overrides | user | `load_dotenv` (router import) | — |
 
 ### C. External state
 

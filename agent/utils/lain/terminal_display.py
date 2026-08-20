@@ -27,6 +27,9 @@ from rich.theme import Theme
 
 from agent.utils.classic.terminal_display import (
     HeadlessDisplayManager,
+    _slash_completer,
+    _slash_menu_style,
+    _install_menu_above,
     SubAgentDisplayManager,
     _truncate,
     format_plan_display,
@@ -151,7 +154,16 @@ def read_user_input(prompt: str | None = None) -> str:
 
     global _pt_session
     if _pt_session is None:
-        _pt_session = PromptSession()
+        # reserve_space_for_menu=0 keeps prompt_toolkit from scrolling the
+        # terminal to make room below the cursor, which is what makes it
+        # draw the completion menu *above* the prompt line instead.
+        _pt_session = PromptSession(
+            completer=_slash_completer(),
+            complete_while_typing=True,
+            reserve_space_for_menu=0,
+            style=_slash_menu_style(),
+        )
+        _install_menu_above(_pt_session)
     return _pt_session.prompt(
         FormattedText([(f"bold {_ACCENT}", prompt)]),
         placeholder=FormattedText([(_DIM, prompt_placeholder())]),
