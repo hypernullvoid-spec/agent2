@@ -12,7 +12,7 @@ debt item ([22_Technical_Debt.md](22_Technical_Debt.md)) or design doc it addres
 2. **Register `atexit(close_sandbox)` in `cli.py`** (Debt A4) — or call `close_backend()`
    in a `finally` inside the `run`/`team` commands — so one-shot runs stop the Docker
    container they started.
-3. **Unify guardrail instances** (Debt A3): have `main.py`/`cli.py`/`dashboard.py` use
+3. **Unify guardrail instances** (Debt A3): have `cli.py`/`dashboard.py` use
    `get_guardrail_policy()` instead of constructing `GuardrailPolicy()` directly (one-line
    change per site); the `get_guardrail_findings` tool then reports the real findings.
 4. **Fix `_verdict_is_approval` word-boundary matching** (Debt A7): use a regex like
@@ -23,7 +23,7 @@ debt item ([22_Technical_Debt.md](22_Technical_Debt.md)) or design doc it addres
    transformer state already exists) or drop the state + docstring promise. Implementing it
    is the higher-value choice — applying a fitted transform to a held-out set is a real
    workflow gap today.
-6. **Fix README drift** (Debt G): test count, `main.py` description; clean the
+6. **Fix README drift** (Debt G): test count, `main.py` description (now a shim); clean the
    working-tree comment typo in `search/runner.py`.
 7. **Enforce the documented 4-char minimum** in `SessionStore.get_session` (Debt A10).
 
@@ -47,16 +47,19 @@ debt item ([22_Technical_Debt.md](22_Technical_Debt.md)) or design doc it addres
 
 ## Structural refactors (larger, optional)
 
-13. **Extract a `paths.py`** exporting `WORKSPACE_DIR`, `RUNS_DIR`, `SESSIONS_DIR`,
-    `KNOWLEDGE_DIR`, `_safe_path`, and a shared `safe_filename()` (Debt C) — seven modules
-    currently re-derive these.
+13. ~~**Extract a `paths.py`**~~ — **done.** `agent/paths.py` exports `WORKSPACE_DIR`,
+    `RUNS_DIR`, `SESSIONS_DIR`, `KNOWLEDGE_DIR`, `safe_path()` and `safe_filename()`.
+    Remaining work: three modules still re-derive `WORKSPACE_DIR` locally
+    (`data_analysis.py`, `data_report.py`, `ml/model_training.py`) — point them at
+    `paths.py` too.
 14. **Split `tools.py`** into per-phase modules (`tools/files.py`, `tools/data.py`, …)
     that all import the same `registry.py` (`@tool`, `TOOL_REGISTRY`, `run_tool`,
     `get_tool_definitions`). Import them from `tools/__init__.py` to preserve the public
     surface. Zero behavior change; large navigability gain.
-15. **Introduce `logging`** behind `ui.py` (Debt F): keep Rich rendering for TTYs, add a
-    standard logger for files/CI; wire `SWARN_ENABLE_TRACING` into `cli.py` entry points
-    too (it currently works only in the REPL).
+15. **Introduce `logging`** behind the display layer (Debt F): keep Rich rendering for
+    TTYs, add a standard logger for files/CI. *(The `SWARN_ENABLE_TRACING` half of this is
+    done — `_make_observability_hooks()` is called from both the REPL and headless mode;
+    `serve`/`mcp-serve` still can't enable it.)*
 16. **Make `POST /api/run` asynchronous** (Debt F): return a run token immediately and
     let clients follow `/ws/live`; requires generating the session id before
     `AgentLoop.run` (e.g. let the caller pass one to `new_session`) — the docstring already

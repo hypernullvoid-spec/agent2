@@ -5,20 +5,55 @@ programmatic Python API.
 
 ## 1. CLI (`swarn`, `agent/cli.py`)
 
+Global options come **before** the subcommand: `--no-banner`, `-m/--model`,
+`--max-iterations`, `--no-stream`, `--sandbox-tools` (run tools in a Docker sandbox instead
+of the local filesystem), `-v/--version`.
+
+Invoked with no subcommand, `swarn` opens the interactive REPL (§1.1). A bare prompt is
+rewritten to `run` (`_rewrite_bare_prompt`), so `swarn "build me a model"` works.
+
 | Command | Arguments / options | Exit code |
 |---|---|---|
-| `swarn run "<task>"` | `--model` (ignored for routing) | 0 iff outcome `complete`, else 1 |
-| `swarn team "<task>"` | `--model`, `--no-tester` | 0 iff `complete`, else 1 |
+| `swarn run "<task>" [paths…]` | Optional document paths the task is about; `--ask` / `--agent` force the document fast path or the ReAct agent; `--page`, `--backend`, `--no-annotate`, `--json`, `--no-progress` | 0 iff outcome `complete`, else 1 |
+| `swarn team "<task>"` | `--no-tester`, `--no-report`, `--no-progress` | 0 iff `complete`, else 1 |
 | `swarn solve "<task>"` | `-d/--data DIR` (required unless `--resume`), `-s/--steps` (20), `-t/--time-limit`, `--drafts` (4), `-m/--model`, `--feedback-model`, `--exec-timeout` (600), `-w/--workers`, `--token-budget`, `--resume RUN_ID`, `--no-learn` | 0 iff a best node exists; 2 for missing data dir; else 1 |
 | `swarn sessions` | `-n/--limit` (10) | 0 |
 | `swarn recall <id-prefix>` | | 0 |
 | `swarn index <path>` | | 0 |
+| `swarn extract-pdf <pdf>` | `--mode document\|pages` (document), `--markdown/--md`, `--tables-only`, `--page`, `-o/--out`, `--csv-dir` | 0 |
+| `swarn to-csv <pdf>` | `-o/--out` (one file), `-d/--dir`, `--page` (repeatable), `--split-fused`, `-q/--quiet` | 0 |
+| `swarn doc-inspect [doc]` | `--page` (1), `--backend vlm\|text\|ocr\|mock`, `--all-pages`, `--no-annotate`, `-o/--out`, `-q/--quiet`. Omit the path to inspect a generated mock invoice | 0 |
+| `swarn ingest [doc]` | `--backend text\|ocr`, `--render-pages`, `--force`, `--list` | 0 |
+| `swarn ask "<question>" <doc>` | `--page`, `--backend`, `--no-annotate`, `--json` | 0 |
 | `swarn playbook` | `--clear` | 0 |
+| `swarn config` | `--path` (print the config file location and exit) | 0 |
 | `swarn guardrail-benchmark` | | 0 |
 | `swarn serve` | `-p/--port` (8420), `--host` (127.0.0.1) | blocks |
 | `swarn mcp-serve` | | blocks (stdio) |
 
-Also reachable without installation: `python -m agent.cli <command>`.
+Also reachable without installation: `python -m agent.cli <command>`, or `python main.py`
+(a shim that forwards argv unchanged).
+
+### 1.1 REPL commands
+
+There is **one** REPL implementation, in `agent/cli.py`. `main.py` used to carry a second,
+hand-rolled one; the two drifted (commands existed in one and not the other, fixes to
+either left the other stale) and it was collapsed into this shim.
+
+| Command | Effect |
+|---|---|
+| `/help` | Command list |
+| `/plan` | Render the current plan (`agent/core/plan.py`) |
+| `/new` | Fresh conversation |
+| `/compact` | Compact the context |
+| `/undo` | Undo the last workspace change |
+| `/model [name]`, `/effort [level]` | Show or set |
+| `/status` | Session status |
+| `/resume [id]` | Resume a past session |
+| `/share-traces [on\|off]` | Toggle trace sharing |
+| `/yolo` | Auto-approve — bypasses `approval_policy` and the cleaning approval gate |
+| `history`, `recall <id>`, `index <path>`, `report`, `team <task>`, `guardrails` | Bare-word commands |
+| `ask`, `ingest`, `inspect`, `to-csv`, `extract-pdf` | The document subcommands. Dispatched through `typer.main.get_command(app)` with `standalone_mode=False` — the *same* Click command the shell invokes, so every flag works here and the two surfaces cannot disagree. A non-zero exit or usage error is reported, not propagated: one bad command must not end the session. |
 
 ## 2. Dashboard HTTP/WS API (`agent/web/dashboard.py`)
 

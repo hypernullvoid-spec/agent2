@@ -1,0 +1,1567 @@
+{
+ "list_files": {
+  "desc": "List files and subdirectories inside the agent workspace.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path inside the workspace. Use '.' for the root."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "read_file": {
+  "desc": "Read the full text content of a file inside the workspace.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path inside the workspace."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "write_file": {
+  "desc": "Write content to a file inside the workspace, creating parent directories as needed. Overwrites the file if it already exists.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path inside the workspace."
+   ],
+   [
+    "content",
+    "string",
+    true,
+    "Full text content to write."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "finish_task": {
+  "desc": "Call this ONLY when the task is fully complete. Provide a short summary of what was done and any output files. This signal ends the current task run.",
+  "params": [
+   [
+    "summary",
+    "string",
+    true,
+    "Concise summary of completed work and resulting files."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "run_python": {
+  "desc": "Execute Python source code in a sandboxed Docker container and return its stdout + stderr. The sandbox has the workspace mounted at /workspace and a per-call timeout (default 300s, SWARN_EXEC_TIMEOUT). Falls back to subprocess if Docker is unavailable. For one-off scripts, prefer this over run_shell.\nLOADED DATASETS ARE ALREADY AVAILABLE HERE as pandas DataFrames named exactly as they were loaded \u2014 just use `orders` directly, do NOT call pd.read_csv('orders.csv') (that reads a stale copy and is refused). Only the datasets your code mentions are bound, so nothing is copied needlessly. Use load_dataset('name') for names that are not valid Python identifiers, and publish_dataset('new_name', df) to hand a derived frame back to the registry for later tool calls. Print what you want to see \u2014 only stdout comes back, so the frame itself never has to fit in context.",
+  "params": [
+   [
+    "code",
+    "string",
+    true,
+    "Python source code to execute."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "run_shell": {
+  "desc": "Execute any shell command in the sandboxed Docker container (bash, git, curl, pip, etc.). Requires Docker. Use this to install packages, run scripts, or inspect the environment. Workspace is at /workspace inside the container.",
+  "params": [
+   [
+    "command",
+    "string",
+    true,
+    "Shell command to run (executed via bash -c)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "install_package": {
+  "desc": "Install one or more Python packages inside the sandbox using pip. Packages persist for the duration of this agent session. Example: install_package('pandas scikit-learn matplotlib')",
+  "params": [
+   [
+    "packages",
+    "string",
+    true,
+    "Space-separated list of package names (e.g. 'numpy pandas')."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "index_project": {
+  "desc": "Index a project directory so you can search it semantically. Walks the directory recursively, chunks Python files by function/class (using the AST) and other files by fixed-size sliding window, embeds every chunk locally, and persists to a ChromaDB vector store. Call this BEFORE search_codebase. Re-calling updates the index. Use '.' to index the workspace, or an absolute path for an external project.",
+  "params": [
+   [
+    "directory",
+    "string",
+    true,
+    "Path to the directory to index. Use '.' for the agent workspace, or supply an absolute path to an external project."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "search_codebase": {
+  "desc": "Search the indexed codebase using a natural-language query. Returns the most semantically relevant code/doc chunks with file paths and line numbers. You must call index_project first. Use this to find: which file handles X, where Y is defined, how Z is implemented \u2014 before reading files directly.",
+  "params": [
+   [
+    "query",
+    "string",
+    true,
+    "Natural-language description of what you're looking for."
+   ],
+   [
+    "n_results",
+    "integer",
+    false,
+    "Number of results to return (default 6, max 20)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "list_sessions": {
+  "desc": "List recent agent sessions with their outcome, duration, number of tool calls, and self-correction count. Useful for understanding what the agent has done before and whether similar tasks were completed successfully. Use recall_session to dig into a specific run.",
+  "params": [
+   [
+    "n",
+    "integer",
+    false,
+    "How many recent sessions to show (default 10)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "recall_session": {
+  "desc": "Recall the detailed tool-call log of a past session by its 8-character ID prefix (visible in list_sessions output). Shows every tool call that was made, in order, so you can understand what worked before or continue from where a prior session left off.",
+  "params": [
+   [
+    "session_id",
+    "string",
+    true,
+    "8-character session ID prefix from list_sessions."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "load_csv": {
+  "desc": "Load a CSV file from the workspace into the data pipeline's dataset registry under the given name, so it can be validated, profiled, feature-engineered, and trained on. Always call validate_dataset right after loading.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to the CSV inside the workspace."
+   ],
+   [
+    "name",
+    "string",
+    true,
+    "Name to register this dataset under (e.g. 'train')."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "load_excel": {
+  "desc": "Load an Excel file (.xlsx/.xls) from the workspace into the dataset registry. If the file has multiple sheets and sheet_name is omitted, returns the list of sheet names instead of loading \u2014 call again with sheet_name set.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to the Excel file inside the workspace."
+   ],
+   [
+    "name",
+    "string",
+    true,
+    "Name to register this dataset under."
+   ],
+   [
+    "sheet_name",
+    "string",
+    false,
+    "Sheet to load. Omit to load the first/only sheet."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "load_parquet": {
+  "desc": "Load a Parquet file from the workspace into the dataset registry.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to the Parquet file inside the workspace."
+   ],
+   [
+    "name",
+    "string",
+    true,
+    "Name to register this dataset under."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "load_sql": {
+  "desc": "Run a SQL query against a database and load the result into the dataset registry. connection_string follows SQLAlchemy URL format (e.g. 'postgresql://user:pass@host:5432/dbname' or 'sqlite:///file.db').",
+  "params": [
+   [
+    "connection_string",
+    "string",
+    true,
+    "SQLAlchemy-style database connection URL."
+   ],
+   [
+    "query",
+    "string",
+    true,
+    "SQL query to execute."
+   ],
+   [
+    "name",
+    "string",
+    true,
+    "Name to register the result under."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "load_cloud_data": {
+  "desc": "Load a CSV or Parquet object directly from S3 (s3://...) or GCS (gs://...) into the dataset registry. Requires cloud credentials to already be configured in the environment.",
+  "params": [
+   [
+    "uri",
+    "string",
+    true,
+    "s3:// or gs:// URI of the object to load."
+   ],
+   [
+    "name",
+    "string",
+    true,
+    "Name to register this dataset under."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "validate_dataset": {
+  "desc": "Profile a loaded dataset for data-quality issues: dtypes, null counts/percentages, duplicate rows, numeric outliers (z-score method), and a schema check via pandera if installed. ALWAYS call this right after loading a dataset and before engineer_features.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a dataset already in the registry."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "preview_dataset": {
+  "desc": "Preview the first rows of a loaded dataset to sanity-check its contents.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a dataset already in the registry."
+   ],
+   [
+    "n",
+    "integer",
+    false,
+    "Number of rows to preview (default 10)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "list_datasets": {
+  "desc": "List all datasets currently loaded in the data pipeline registry, with their shapes.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "save_dataset": {
+  "desc": "Save a loaded/transformed dataset from the registry to a file in the workspace (CSV or Parquet, inferred from the path's extension).",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a dataset already in the registry."
+   ],
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to save to inside the workspace."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "profile_features": {
+  "desc": "Profile a dataset's columns to decide feature-engineering roles: numeric vs categorical (low/high cardinality) vs datetime vs constant/ID columns to drop. If target_col is given, also infers the likely task type (regression / binary / multiclass classification). Call this BEFORE engineer_features so you can pass an informed drop_cols list.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a dataset already in the registry."
+   ],
+   [
+    "target_col",
+    "string",
+    false,
+    "Optional: the prediction target column."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "engineer_features": {
+  "desc": "Transform a dataset into a model-ready numeric feature matrix: imputes + scales numeric columns, one-hot encodes low-cardinality categoricals, frequency-encodes high-cardinality categoricals, and decomposes datetime columns into year/month/day/dayofweek/is_weekend. Registers the result under a new dataset name (default '<name>_features') ready for train_models. Carries target_col through unchanged if given.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of the source dataset in the registry."
+   ],
+   [
+    "target_col",
+    "string",
+    false,
+    "Prediction target column to preserve and exclude from transformation."
+   ],
+   [
+    "drop_cols",
+    "array",
+    false,
+    "Columns to drop before transforming (e.g. ID columns flagged by profile_features)."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    "Name for the resulting dataset (default '<name>_features')."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "train_models": {
+  "desc": "Train and evaluate candidate models on a feature-engineered dataset (must be all-numeric \u2014 run engineer_features first). Auto-detects regression vs binary vs multiclass classification from the target column and tries sensible candidates (linear/logistic, random forest, XGBoost, LightGBM, a small PyTorch MLP) unless a subset is specified. Returns a leaderboard ranked by the appropriate metric (RMSE for regression, accuracy for classification) \u2014 each candidate also shows a K-fold cross-validated score (mean\u00b1std) by default \u2014 and keeps the best model as a trained artifact for later evaluation/deployment phases.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of the feature-engineered dataset in the registry."
+   ],
+   [
+    "target_col",
+    "string",
+    true,
+    "Name of the target/label column within that dataset."
+   ],
+   [
+    "candidates",
+    "array",
+    false,
+    "Subset of model families to try. Omit to try all available for the detected task type."
+   ],
+   [
+    "test_size",
+    "number",
+    false,
+    "Fraction of data held out for evaluation (default 0.2)."
+   ],
+   [
+    "cv_folds",
+    "number",
+    false,
+    "K-fold cross-validation to report (default 5). Pass null/0 to disable."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "tune_hyperparameters": {
+  "desc": "Run Optuna hyperparameter search (default 25 trials) over a fixed search space for one model family (random_forest, xgboost, or lightgbm) on the given dataset/target. Registers the best-found model as a trained artifact named '<name>__<candidate>_tuned'. Use after train_models has identified which family performs best.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of the feature-engineered dataset in the registry."
+   ],
+   [
+    "target_col",
+    "string",
+    true,
+    "Name of the target/label column."
+   ],
+   [
+    "candidate",
+    "string",
+    false,
+    "Which model family to tune."
+   ],
+   [
+    "n_trials",
+    "integer",
+    false,
+    "Number of Optuna trials to run (default 25)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "list_trained_models": {
+  "desc": "List all trained model artifacts currently held in memory, with their metrics, and how many are persisted to disk.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "save_model": {
+  "desc": "Persist a trained model artifact to workspace/artifacts/ so it survives process restarts (auto-loads on next start). Training and tuning already save automatically \u2014 use this only to re-save after changes.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from list_trained_models."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "delete_model": {
+  "desc": "Delete a trained model artifact \u2014 removes it from memory and from workspace/artifacts/ on disk. It will no longer appear in list_trained_models or be usable by evaluate_model/compare_models.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from list_trained_models."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "evaluate_model": {
+  "desc": "Full diagnostic report for a trained model artifact: re-evaluates it on its stored held-out test split with extra detail beyond the leaderboard's headline numbers \u2014 per-class precision/recall for classification, residual distribution stats for regression. Use this before deciding whether a model is good enough to deploy.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters output (see list_trained_models)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "plot_confusion_matrix": {
+  "desc": "Generate and save a confusion matrix plot (PNG, in workspace/plots/) for a classification model artifact, showing where it confuses classes.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "plot_roc_curve": {
+  "desc": "Generate and save an ROC curve plot with AUC (PNG, in workspace/plots/) for a binary classification model artifact that supports predict_proba.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "plot_residuals": {
+  "desc": "Generate and save residual diagnostic plots (PNG, in workspace/plots/) \u2014 residuals-vs-predicted and residual distribution \u2014 for a regression model artifact. Look for a random scatter around 0 and a bell-shaped histogram; patterns indicate the model is missing structure in the data.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "compare_models": {
+  "desc": "Generate and save a bar-chart comparison (PNG, in workspace/plots/) of every trained model artifact currently in memory, grouped by task type and ranked by the appropriate primary metric. Use this to see all candidates and tuning runs side by side before picking one to deploy.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "feature_importance": {
+  "desc": "Rank the features of a trained model artifact by importance (tree models: feature_importances_; linear/logistic: |coef|) and save a bar chart (PNG, in workspace/plots/). Use this to explain what the model actually relies on before trusting/deploying it.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "predict": {
+  "desc": "Run in-session inference on a trained model artifact. Pass rows as a list of dicts keyed by the model's feature column names (see the feature_columns reported by train_models/evaluate), e.g. [{'numeric__RunTime': 120, 'numeric__YEAR': 2015}]. Returns the model's predictions. Use this to score new data without deploying the FastAPI service.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ],
+   [
+    "rows",
+    "array",
+    true,
+    "Rows to predict on, keyed by feature column names."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "package_model": {
+  "desc": "Package a trained model artifact for deployment: serializes the model (pickle by default, or ONNX for sklearn-native estimators if skl2onnx is installed \u2014 falls back to pickle otherwise), generates a FastAPI service with a typed /predict endpoint and auto OpenAPI docs built from the model's feature columns, plus a requirements.txt and Dockerfile. Everything is written to workspace/deployments/<artifact_id>/. Call evaluate_model first to confirm the artifact is actually good enough to ship.",
+  "params": [
+   [
+    "artifact_id",
+    "string",
+    true,
+    "Artifact key from train_models/tune_hyperparameters."
+   ],
+   [
+    "export_format",
+    "string",
+    false,
+    "Serialization format. 'onnx' only applies to sklearn-native models and falls back to pickle otherwise (default: pickle)."
+   ],
+   [
+    "api_title",
+    "string",
+    false,
+    "Optional title for the generated FastAPI service's OpenAPI docs."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "connect_mcp_server": {
+  "desc": "Connect to an external MCP (Model Context Protocol) server as a subprocess and register every tool it exposes, immediately and automatically, under names like 'mcp_<server_name>_<tool_name>'. After this call succeeds, those remote tools work exactly like any other tool here \u2014 call them directly by name. command/args follow the same shape as Claude Desktop's MCP config, e.g. command='npx', args=['-y', '@modelcontextprotocol/server-github'], or for a local Python MCP server: command='python3', args=['my_server.py'].",
+  "params": [
+   [
+    "server_name",
+    "string",
+    true,
+    "A short name you choose to identify this server (used as a prefix for its tool names)."
+   ],
+   [
+    "command",
+    "string",
+    true,
+    "The executable to launch the server (e.g. 'npx', 'python3')."
+   ],
+   [
+    "args",
+    "array",
+    false,
+    "Command-line arguments for launching the server."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "list_mcp_servers": {
+  "desc": "List all currently connected MCP servers and how many tools each one exposes.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "list_mcp_tools": {
+  "desc": "List the tools currently registered from connected MCP servers (optionally filtered to one server). These tool names are what you call directly \u2014 e.g. 'mcp_github_create_issue' \u2014 once connected.",
+  "params": [
+   [
+    "server_name",
+    "string",
+    false,
+    "Optional: only list tools from this server."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "disconnect_mcp_server": {
+  "desc": "Disconnect a previously connected MCP server and remove all of its tools from the registry. Call this before reconnecting the same server_name, or to free resources when you're done with it.",
+  "params": [
+   [
+    "server_name",
+    "string",
+    true,
+    "Name of a server previously connected via connect_mcp_server."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "index_pdf": {
+  "desc": "Index a PDF into the same searchable index Phase 3's index_project uses \u2014 extracts both prose text and tables (one chunk per table, preserving row/column structure). After this, search_codebase will return results from this PDF alongside any indexed code, with citations as (file, page) instead of (file, line range).",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF file (relative to the workspace, or absolute)."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "extract_pdf_structured": {
+  "desc": "Extract a PDF's contents as STRUCTURED JSON \u2014 per page, the prose text plus every detected table as real rows/columns (a 'rows' grid and, when the header row is usable, 'records' of {column: value}). Use this instead of index_pdf when you need the DATA \u2014 to compute on it, reshape it, or pull specific fields \u2014 rather than making the PDF searchable. Unlike index_pdf this does no embedding and touches no vector store, so it needs no model download and works offline. Note that tables are found by visual structure (ruled lines/column gaps); a table drawn as plain positioned text won't be detected and its content appears in that page's 'text' instead.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF file (relative to the workspace, or absolute)."
+   ],
+   [
+    "tables_only",
+    "boolean",
+    false,
+    "Omit each page's prose text and return only the detected tables. Useful for a text-heavy PDF where the tables are all you need and the full text would flood the context."
+   ],
+   [
+    "page",
+    "integer",
+    false,
+    "Extract only this single 1-based page number instead of the whole document."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "extract_pdf_document": {
+  "desc": "Convert an ENTIRE PDF into a structured document tree \u2014 not just its tables. Returns sections (with headings and nesting level) containing typed blocks: paragraph, list (with items split out), key_values, and table (rows + records), all in reading order \u2014 plus the document title, the PDF's metadata, and a flat 'fields' map of every label->value pair found anywhere, including ones embedded in prose like 'Invoice date: 2024-09-17'. Prefer this over extract_pdf_structured when you need the whole document as data rather than page-level text blobs; prefer index_pdf when you only need the PDF to be searchable. Structure is inferred from layout (font sizes, boldness, position) with no LLM call and no network.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF file (relative to the workspace, or absolute)."
+   ],
+   [
+    "page",
+    "integer",
+    false,
+    "Keep only blocks from this 1-based page. Sections with nothing left are dropped."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "index_image": {
+  "desc": "Index an image into the same searchable index Phase 3's index_project uses \u2014 OCR extracts any visible text, and (if a CLIP-family model is available) the image itself is embedded so purely visual content is searchable too. An optional caption is indexed alongside, useful for diagrams/photos where OCR alone wouldn't capture the intent.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the image file (relative to the workspace, or absolute)."
+   ],
+   [
+    "caption",
+    "string",
+    false,
+    "Optional human-written description of the image."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "index_audio": {
+  "desc": "Transcribe an audio file (via openai-whisper) and index the transcript into the same searchable index Phase 3's index_project uses. Citations use timestamps (e.g. '12:34') instead of page/line numbers, so a search result tells you exactly where in the recording to find the relevant moment.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the audio file (relative to the workspace, or absolute)."
+   ],
+   [
+    "model_size",
+    "string",
+    false,
+    "Whisper model size \u2014 larger is slower but more accurate. Default 'base'."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "swarn_doc_inspect": {
+  "desc": "Extract key entities from a document (PDF or image) TOGETHER WITH the bounding box on the page where each value was read, and write an annotated copy of the page with those boxes drawn on it, colour-coded by confidence (green >0.85, amber 0.60-0.85, red <0.60). Returns JSON: each field's name, value, confidence, and normalized box (0.0-1.0 coordinates), plus the path to the annotated image. Use this instead of extract_pdf_document when WHERE a value came from matters \u2014 invoice/KYC/financial review, verifying a suspicious number, or producing evidence a human can audit at a glance. Use extract_pdf_document instead when you only need a PDF's text and tables as data and do not care about page coordinates; note this tool also handles scanned images, which extract_pdf_document cannot. With no vision-model API key configured it returns a deterministic sample extraction (backend='mock'), so treat backend='mock' in the result as 'this is demo data, not this document's real contents'.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF or image (relative to the workspace, or absolute)."
+   ],
+   [
+    "page",
+    "integer",
+    false,
+    "1-based page number for a PDF. Defaults to 1. Ignored for images."
+   ],
+   [
+    "annotate",
+    "boolean",
+    false,
+    "Write the annotated image. Default true. Set false to skip the rendering when you only need the fields and coordinates."
+   ],
+   [
+    "backend",
+    "string",
+    false,
+    "Force an extraction backend: 'vlm' (vision model API), 'ocr' (local tesseract), or 'mock'. Omit to auto-select."
+   ],
+   [
+    "include_raw",
+    "boolean",
+    false,
+    "Include the extractor's full untouched response. Verbose \u2014 only useful when debugging a bad extraction."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "swarn_pdf_to_csv": {
+  "desc": "Convert a PDF's tables into CSV file(s) on disk and return what was written. Handles both ruled tables and BORDERLESS ones (a dataset printed to PDF, a statement, a report appendix) by inferring columns from text alignment when nothing is ruled \u2014 which is why this succeeds on files that yield no tables at all otherwise. Consecutive pages of the same width are written as ONE table; a change of shape starts a new file. Use this when the user wants a PDF's data as CSV, or when you need to load a PDF's table with pandas \u2014 convert first, then load_csv the result. Returns JSON naming every file written.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF (relative to the workspace, or absolute)."
+   ],
+   [
+    "out_path",
+    "string",
+    false,
+    "Write everything to this ONE csv file."
+   ],
+   [
+    "out_dir",
+    "string",
+    false,
+    "Write one csv per table into this directory."
+   ],
+   [
+    "split_fused",
+    "boolean",
+    false,
+    "Split cells holding two values with no separator (e.g. '124.9833yes'). Ignored when it would misalign rows."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "swarn_doc_ingest": {
+  "desc": "Parse a document (PDF or image) ONCE into a stored structured representation \u2014 word-level text with bounding boxes, per-word confidence, line ids, page dimensions, and tables \u2014 persisted as JSON. Later swarn_doc_ask calls about the same file reuse it instead of re-reading the document, which matters most for scans (a full OCR pass per question otherwise). Calling this is OPTIONAL: swarn_doc_ask ingests automatically on first use. Call it explicitly to pre-warm a document you are about to ask several questions about, or to report what a document contains before asking anything.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF or image (relative to the workspace, or absolute)."
+   ],
+   [
+    "backend",
+    "string",
+    false,
+    "Force how the document is read: 'text' (PDF text layer) or 'ocr' (local tesseract). Omit to auto-select."
+   ],
+   [
+    "force",
+    "boolean",
+    false,
+    "Re-parse even if this exact document content is already stored."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "swarn_doc_ask": {
+  "desc": "Answer a specific QUESTION about a document (PDF or image), grounded in the document's own text. Returns the answer plus the evidence it rests on: each cited figure with its page, its verbatim quote, and its bounding box, an annotated image with those figures boxed, and \u2014 when the answer required arithmetic the document does not state directly (a percentage change, a total, a ratio) \u2014 the computation, independently re-evaluated. Prefer this over swarn_doc_inspect when you have a QUESTION; prefer swarn_doc_inspect when you want whatever fields a page holds. IMPORTANT for interpreting the result: every quote is checked against the document text, so a field with verified=false was NOT found where the answer claimed and must not be relied on; likewise computation_check starting with 'MISMATCH' means the arithmetic is wrong. found=false means the document does not support an answer \u2014 report that rather than substituting your own knowledge.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Path to the PDF or image (relative to the workspace, or absolute)."
+   ],
+   [
+    "question",
+    "string",
+    true,
+    "The question to answer about the document."
+   ],
+   [
+    "page",
+    "integer",
+    false,
+    "Restrict to one 1-based page. Omit to search the whole document."
+   ],
+   [
+    "backend",
+    "string",
+    false,
+    "Force how the document is read: 'text' (PDF text layer) or 'ocr' (local tesseract). Omit to auto-select."
+   ],
+   [
+    "include_raw",
+    "boolean",
+    false,
+    "Include the model's untouched response. Verbose; for debugging a bad answer."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "prepare_finetune_dataset": {
+  "desc": "Validate and save a list of {'prompt', 'completion'} examples as a fine-tuning dataset under a chosen run_id, splitting off a validation set automatically if there are 10+ examples. Catches malformed examples (missing fields, empty strings) before any training starts. This is NOT for fine-tuning Claude \u2014 it prepares data for fine-tuning a small local open-weight model via fine_tune.",
+  "params": [
+   [
+    "examples",
+    "array",
+    true,
+    "List of {'prompt', 'completion'} training examples."
+   ],
+   [
+    "run_id",
+    "string",
+    true,
+    "A name for this fine-tuning run."
+   ],
+   [
+    "validation_split",
+    "number",
+    false,
+    "Fraction held out for validation (default 0.1). Only applied with 10+ examples."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "fine_tune": {
+  "desc": "Fine-tune a small local open-weight model (a HuggingFace model ID, e.g. a small Qwen/Llama variant \u2014 NOT Claude) on a dataset already prepared via prepare_finetune_dataset, using LoRA (or QLoRA with use_qlora=True, which requires a CUDA GPU). Saves the trained adapter under workspace/finetune/<run_id>/adapter/. This step requires real compute time and downloads the base model on first use \u2014 plan accordingly for larger models or datasets.",
+  "params": [
+   [
+    "run_id",
+    "string",
+    true,
+    "A run_id with a dataset already prepared via prepare_finetune_dataset."
+   ],
+   [
+    "base_model_id",
+    "string",
+    true,
+    "HuggingFace model ID of the local base model to fine-tune."
+   ],
+   [
+    "use_qlora",
+    "boolean",
+    false,
+    "Use 4-bit QLoRA instead of plain LoRA. Requires a CUDA GPU. Default false."
+   ],
+   [
+    "num_epochs",
+    "integer",
+    false,
+    "Training epochs (default 3)."
+   ],
+   [
+    "learning_rate",
+    "number",
+    false,
+    "Learning rate (default 2e-4)."
+   ],
+   [
+    "lora_r",
+    "integer",
+    false,
+    "LoRA rank (default 8) \u2014 higher means more trainable parameters."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "merge_and_export_model": {
+  "desc": "Export a completed fine-tuning run's result. export_mode='merged' (default) folds the LoRA adapter into the base model and saves a standalone model directory anything can load normally. export_mode='adapter' just reports the adapter's location as-is (smaller on disk, but needs PEFT-aware loading code).",
+  "params": [
+   [
+    "run_id",
+    "string",
+    true,
+    "A run_id that has completed fine_tune."
+   ],
+   [
+    "export_mode",
+    "string",
+    false,
+    "Default 'merged'."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "list_finetune_runs": {
+  "desc": "List all fine-tuning runs in this session and their status.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "run_guardrail_benchmark": {
+  "desc": "Run a small canned benchmark suite testing whether the prompt- injection guardrail correctly flags known injection patterns AND correctly does NOT flag benign content (both matter \u2014 a guardrail that flags everything is as useless as one that catches nothing). Useful for verifying the guardrail layer itself is working, or after editing the pattern list in observability.py.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "get_guardrail_findings": {
+  "desc": "Show every prompt-injection pattern flagged so far in this session by the live guardrail policy (the one actually scanning real tool results during this run, not the benchmark's synthetic cases). Empty if nothing's been flagged.",
+  "params": [],
+  "mod": "agent.runtime.tools"
+ },
+ "solve_ml_task": {
+  "desc": "Solve a complete ML task autonomously via solution tree search: the engine drafts several independent solution scripts, executes each in the sandbox, reviews the results, then iteratively debugs failures and improves the best solution until the step/time budget is spent. Returns the best validation metric, the path to the winning script, and the run report. Use this for any 'train the best possible model on this data' style task instead of hand-driving individual train_model calls.",
+  "params": [
+   [
+    "task",
+    "string",
+    true,
+    "Full natural-language task description including the target and metric."
+   ],
+   [
+    "data_dir",
+    "string",
+    true,
+    "Path to the directory holding the task's data files."
+   ],
+   [
+    "steps",
+    "integer",
+    false,
+    "Search budget in nodes (default 12)."
+   ],
+   [
+    "time_limit_secs",
+    "integer",
+    false,
+    "Optional wall-clock budget in seconds."
+   ]
+  ],
+  "mod": "agent.runtime.tools"
+ },
+ "clean_dataset": {
+  "desc": "Run a full human-in-the-loop data-quality diagnosis on a loaded dataset. Returns a numbered CLEANING PLAN covering missing values, redundancy, structural errors, types/formats, and anomalies. Changes NOTHING. After loading any dataset, ALWAYS call this so the plan exists, then call apply_cleaning \u2014 it will ask the human for approval and apply only the approved ops. Do NOT call ask_human for cleaning approval; apply_cleaning does that itself. If a target/label column will be used for training, pass it as target_col so the plan drops rows with a missing target instead of imputing it.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a loaded dataset."
+   ],
+   [
+    "target_col",
+    "string",
+    false,
+    "Optional target/label column (nulls in it are dropped, not imputed)."
+   ]
+  ],
+  "mod": "agent.data_cleaner"
+ },
+ "apply_cleaning": {
+  "desc": "Apply cleaning operations to a dataset (the plan from clean_dataset). IMPORTANT: this tool BLOCKS and asks the human to approve the plan \u2014 'all', 'none', 'op1 op3 op5', or 'op4: factor=83.2' \u2014 and WAITS for their answer before changing anything. It applies ONLY the ops the human approves. Registers the result under '<name>_clean'; the original is never modified. Cross-field/rule ops only add validation flag columns, never delete.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "operations",
+    "array",
+    true,
+    "Proposed op ids from the cleaning plan, e.g. ['op1','op3']. The human's approval reply overrides this."
+   ],
+   [
+    "params",
+    "object",
+    false,
+    "Optional per-op parameters keyed by op id, e.g. {'op4': {'factor': 83.2}}."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    "Result dataset name (default '<name>_clean')."
+   ],
+   [
+    "target_col",
+    "string",
+    false,
+    "Optional target column (must match clean_dataset's target_col)."
+   ]
+  ],
+  "mod": "agent.data_cleaner"
+ },
+ "ask_human": {
+  "desc": "Ask the human for approval/input and return their answer. Use this BEFORE any destructive step (deleting rows/columns, dedup, imputation, etc.) \u2014 the project requires human-in-the-loop for data changes. Call this tool ALONE and wait for the answer; do not batch it with other tool calls.",
+  "params": [
+   [
+    "question",
+    "string",
+    true,
+    "The question to ask, with any evidence (counts, sample values)."
+   ],
+   [
+    "options",
+    "array",
+    false,
+    "Optional answer choices."
+   ]
+  ],
+  "mod": "agent.data_cleaner"
+ },
+ "describe_dataset": {
+  "desc": "Analyst-style summary of a loaded dataset: per-column dtype, non-null/null counts, cardinality, and for numeric columns min/q1/median/q3/max/mean (or top values for low-cardinality categoricals).",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ]
+  ],
+  "mod": "agent.data_cleaner"
+ },
+ "group_dataset": {
+  "desc": "SQL-style GROUP BY on a loaded dataset (e.g. keys=['region','month'], aggregations={'sales':'sum','orders':'count'}). Registers the result as '<name>_grouped' and returns a preview.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "keys",
+    "array",
+    true,
+    "Columns to group by."
+   ],
+   [
+    "aggregations",
+    "object",
+    true,
+    "Mapping column \u2192 agg function (sum/mean/count/min/max)."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_cleaner"
+ },
+ "analyze_dataset": {
+  "desc": "START HERE for any 'analyse/explore/what's in this data' request. One-call overview of a loaded dataset: column roles, what stands out (blanks, duplicates, extreme values, lopsided distributions), which columns relate to each other, the time range, and a suggested next step. Changes nothing. Prefer this over calling several plot tools blind.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    "Name of a loaded dataset."
+   ],
+   [
+    "target",
+    "string",
+    false,
+    "Optional column of interest \u2014 everything is ranked against it."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "plot_column": {
+  "desc": "Chart one column and describe its shape in words. Numbers get a histogram plus min/middle/max, spread and extreme-value count; categories get a bar chart plus the most common values and their share; dates get a timeline. The chart type is chosen automatically from the column. Saves a PNG under workspace/plots/ and returns both the path and the reading \u2014 you cannot see the image, so use the words.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "column",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "bins",
+    "integer",
+    false,
+    "Histogram bars for number columns (default 30)."
+   ],
+   [
+    "top",
+    "integer",
+    false,
+    "How many bars for a category column (default 15)."
+   ],
+   [
+    "log_scale",
+    "boolean",
+    false,
+    "Use a log x-axis. Essential for columns spanning orders of magnitude (vote counts, revenue) \u2014 a linear axis squashes them into one bar."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "analyze_multivalue": {
+  "desc": "For a column whose cells hold LISTS \u2014 'Action, Adventure, Comedy', tags, skills. Splits them and analyses the individual values, so 500 meaningless combinations become ~25 real categories. Pass value_col to rank them by an average (e.g. which genre rates highest). Rows with several values are counted once per value, so shares exceed 100%. Registers the breakdown as a dataset. Use this INSTEAD of plot_column/compare_groups on such a column \u2014 comparing the raw combinations is meaningless.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "column",
+    "string",
+    true,
+    "The list-valued column."
+   ],
+   [
+    "value_col",
+    "string",
+    false,
+    "Optional number column to average per value."
+   ],
+   [
+    "how",
+    "string",
+    false,
+    "mean (default) or median."
+   ],
+   [
+    "sep",
+    "string",
+    false,
+    "Separator; auto-detected (',' ';' '|') if omitted."
+   ],
+   [
+    "min_rows",
+    "integer",
+    false,
+    "Ignore values with fewer rows than this (default 5)."
+   ],
+   [
+    "top",
+    "integer",
+    false,
+    ""
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "plot_relationship": {
+  "desc": "Chart two columns together and describe how they relate. Picks the right view from the column types: two numbers \u2192 scatter with trend line and correlation; number and category \u2192 box plot with per-group averages; date and number \u2192 trend line with the change; two categories \u2192 counts grid. Saves a PNG and returns the path plus the reading in words.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "x",
+    "string",
+    true,
+    "First column (the date, if there is one)."
+   ],
+   [
+    "y",
+    "string",
+    true,
+    "Second column (the measure, if there is one)."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "analyze_missing": {
+  "desc": "Are the blanks random accidents, or one distinct group of records? Reports the percentage empty per column AND \u2014 the important part \u2014 which columns go blank in the SAME rows. Columns that always go blank together mark a structurally different set of rows (e.g. unreleased titles with no rating, no votes and no runtime); imputing each one separately fabricates a whole record. Call this BEFORE approving impute operations on a dataset with several gappy columns.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "min_frac",
+    "number",
+    false,
+    "Ignore columns emptier than this fraction (default 0.01)."
+   ],
+   [
+    "top",
+    "integer",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "check_subgroups": {
+  "desc": "Does a correlation actually hold, or is it an average of opposite effects? Recomputes the x~y relationship inside each group of `by` and flags any group where it reverses or is far stronger/weaker. A pooled correlation can be true overall and wrong for every group in it. Run this before reporting any correlation as a finding.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "x",
+    "string",
+    true,
+    "First number column."
+   ],
+   [
+    "y",
+    "string",
+    true,
+    "Second number column."
+   ],
+   [
+    "by",
+    "string",
+    true,
+    "Category column to split on. List-valued columns are grouped by their first value."
+   ],
+   [
+    "min_rows",
+    "integer",
+    false,
+    "Skip groups smaller than this (default 30 \u2014 fewer is noise)."
+   ],
+   [
+    "top",
+    "integer",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "analyze_correlations": {
+  "desc": "Which number columns move together. Saves a heatmap and returns a ranked list in words ('revenue \u2194 qty: +0.72 strong'). Pass target to rank every column against that one \u2014 this is how you answer 'what drives X'. Reports association, never causation.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "target",
+    "string",
+    false,
+    "Optional column to rank everything against."
+   ],
+   [
+    "method",
+    "string",
+    false,
+    "pearson (default), spearman or kendall."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "pivot_dataset": {
+  "desc": "Cross-tab grid \u2014 categories down the side, categories across the top, a measure in the cells (e.g. rows=['region'], columns=['month'], values='revenue', how='sum'). Set percent=true for share of the grand total. Registers the grid as a new dataset ('<name>_pivot') so it can be charted or saved. Use group_dataset for a flat summary.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "rows",
+    "array",
+    true,
+    "Column(s) down the side."
+   ],
+   [
+    "columns",
+    "array",
+    false,
+    "Optional column(s) across the top."
+   ],
+   [
+    "values",
+    "string",
+    false,
+    "Column to aggregate. Omit to count rows."
+   ],
+   [
+    "how",
+    "string",
+    false,
+    "sum (default), mean, count, min, max."
+   ],
+   [
+    "percent",
+    "boolean",
+    false,
+    "Show each cell as % of the grand total."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "analyze_over_time": {
+  "desc": "Group a dataset into time periods and show the trend: daily/weekly/monthly/quarterly totals with the percentage change from the period before, the biggest rise and fall, and a saved line chart. Registers the result as '<name>_over_time'. freq: 'D', 'W', 'ME' (month, default), 'QE', 'YE'.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "date_col",
+    "string",
+    true,
+    "Column holding the dates."
+   ],
+   [
+    "freq",
+    "string",
+    false,
+    "D, W, ME (default), QE or YE."
+   ],
+   [
+    "value_col",
+    "string",
+    false,
+    "Column to total. Omit to count rows."
+   ],
+   [
+    "how",
+    "string",
+    false,
+    "sum (default), mean, min, max."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    ""
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "compare_groups": {
+  "desc": "Is the gap between groups real, or just noise? Reports each group's average and row count, the widest gap, and a significance test (Welch t-test for two groups, one-way ANOVA for more) translated into plain language. Use after plot_relationship shows groups that look different.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "value_col",
+    "string",
+    true,
+    "The number being compared."
+   ],
+   [
+    "group_col",
+    "string",
+    true,
+    "The column that splits the rows into groups."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "rank_by": {
+  "desc": "The league table for a dimension \u2014 'top 5 products by revenue', 'cities by order count'. Returns a NUMBERED list with each group's share and the running cumulative share, warns when the cut-off is a near-tie, and names the bottom of the table. Use this for EVERY 'top N' or 'best/worst' statement you intend to make: reading a ranking off a bar chart reorders near-ties and drops rows. The ranking is recorded, and a report naming a different top N will be refused.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "group_col",
+    "string",
+    true,
+    "The dimension to rank (product, city, category\u2026)."
+   ],
+   [
+    "value_col",
+    "string",
+    false,
+    "The number to rank by. Omit to rank by row count."
+   ],
+   [
+    "how",
+    "string",
+    false,
+    "sum (default), mean, median, count, min, max."
+   ],
+   [
+    "top",
+    "integer",
+    false,
+    "How many to list (default 10)."
+   ],
+   [
+    "ascending",
+    "boolean",
+    false,
+    "true for the worst performers first."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "measure_duration": {
+  "desc": "Elapsed time between two date columns \u2014 'average order to delivery time'. Returns average, median and range, and breaks it down by a category if you pass `by`. Handles the case where the two columns are written in different date formats (parsing each alone turns '05-03-2023' into May 3rd and silently corrupts every gap), states which convention it used, and warns loudly if any end date falls before its start date. Use this for any 'how long does X take' KPI.",
+  "params": [
+   [
+    "name",
+    "string",
+    true,
+    ""
+   ],
+   [
+    "start_col",
+    "string",
+    true,
+    "The earlier date column (e.g. order date)."
+   ],
+   [
+    "end_col",
+    "string",
+    true,
+    "The later date column (e.g. delivery date)."
+   ],
+   [
+    "unit",
+    "string",
+    false,
+    "days (default), hours, minutes, seconds or weeks."
+   ],
+   [
+    "by",
+    "string",
+    false,
+    "Optional category column to break the average down by."
+   ]
+  ],
+  "mod": "agent.data_analysis"
+ },
+ "write_report": {
+  "desc": "Write the findings report a human actually reads and forwards. Use this at the END of an analysis, before finish_task. Structure is fixed: Background \u2192 Key figures \u2192 Key takeaways \u2192 Methodology \u2192 Appendix, telling a Situation / Complication / Resolution story.\nYOU write the narrative, in your own voice \u2014 nobody is talking to the dashboard, they are talking to you, so tell the story. 'situation' restates why this was asked in the reader's terms. 'complication' is what the data complicates about that question. 'takeaways' are 3-5 plain sentences of what you found and why it matters \u2014 conclusions, not statistics. 'next_steps' is the second-degree analysis you propose.\nThe numbers, charts, cleaning record and limitations are generated from recorded evidence and cannot be edited by you. If your narrative contradicts what was measured the report is REFUSED with the reasons \u2014 fix it and call again.",
+  "params": [
+   [
+    "dataset",
+    "string",
+    true,
+    "The loaded dataset the report is about (usually '<name>_clean')."
+   ],
+   [
+    "situation",
+    "string",
+    true,
+    "Background: one short paragraph restating why this was asked, in the reader's terms."
+   ],
+   [
+    "complication",
+    "string",
+    false,
+    "What the data complicates about the original question \u2014 the reason this is not a one-line answer."
+   ],
+   [
+    "takeaways",
+    "array",
+    true,
+    "3-5 plain-language conclusions. Sentences, not statistics."
+   ],
+   [
+    "next_steps",
+    "array",
+    false,
+    "The second-degree analysis you propose next."
+   ],
+   [
+    "title",
+    "string",
+    false,
+    ""
+   ],
+   [
+    "dashboard_url",
+    "string",
+    false,
+    "Optional link to a live dashboard."
+   ],
+   [
+    "output_name",
+    "string",
+    false,
+    "File stem (default '<dataset>_report')."
+   ]
+  ],
+  "mod": "agent.data_report"
+ },
+ "inspect_workbook": {
+  "desc": "Describe EVERY sheet of an Excel workbook without loading any data: per-sheet shape, column names and types, sample rows, the formulas each sheet contains, which sheets feed which, and columns shared between sheets. Costs a few hundred tokens for a workbook of any size \u2014 use this FIRST on any .xlsx, before deciding what to load. Reading a multi-sheet workbook one sheet at a time hides the relationships between the tabs.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to the .xlsx inside the workspace."
+   ]
+  ],
+  "mod": "agent.workbook"
+ },
+ "load_workbook": {
+  "desc": "Load an Excel workbook's sheets into the dataset registry \u2014 ALL of them by default, one dataset per sheet, named '<file>_<sheet>'. Returns the same structural card as inspect_workbook, annotated with the name each sheet was registered under. Use this instead of calling load_excel once per sheet.",
+  "params": [
+   [
+    "path",
+    "string",
+    true,
+    "Relative path to the .xlsx inside the workspace."
+   ],
+   [
+    "prefix",
+    "string",
+    false,
+    "Name prefix for the registered datasets (default: the file name)."
+   ],
+   [
+    "sheets",
+    "array",
+    false,
+    "Only these sheets. Omit to load every sheet."
+   ]
+  ],
+  "mod": "agent.workbook"
+ }
+}

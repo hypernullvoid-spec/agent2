@@ -132,7 +132,6 @@ _PLACEHOLDERS = [
     "analyze sales.csv and show me what stands out",
     "train a model to predict churn from customers.csv",
     "extract the tables from this PDF into a CSV",
-    "explain what agent/core/agent_loop.py does",
     "clean the missing values in data/raw.csv",
     "plot revenue by month and save the chart",
     "find every place we call the LLM directly",
@@ -148,6 +147,95 @@ _pt_session = None
 def prompt_placeholder() -> str:
     """A random example task for the hint line above the prompt."""
     return random.choice(_PLACEHOLDERS)
+
+
+def _slash_completer():
+    """Completer that lists every REPL command the moment a "/" is typed.
+
+    Menu entries come straight from HELP_ROWS, so the dropdown and `/help`
+    can never drift apart. Returns None when prompt_toolkit is missing.
+    """
+    try:
+        from prompt_toolkit.completion import Completer, Completion
+    except ImportError:
+        return None
+
+    class _SlashCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:
+                return
+            word = text
+            for command, args, description in HELP_ROWS:
+                if not command.startswith("/"):
+                    continue
+                if not command.startswith(word):
+                    continue
+                yield Completion(
+                    command,
+                    start_position=-len(word),
+                    display=command,
+                    display_meta=f"{args}  {description}".strip(),
+                )
+
+    return _SlashCompleter()
+
+
+def _slash_menu_style():
+    """Dark-grey menu with white entries. Returns None without prompt_toolkit."""
+    try:
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        return None
+    return Style.from_dict(
+        {
+            "completion-menu": "bg:#2b2b2b #ffffff",
+            "completion-menu.completion": "bg:#2b2b2b #ffffff",
+            "completion-menu.completion.current": "bg:#4a4a4a #ffffff bold",
+            "completion-menu.meta.completion": "bg:#2b2b2b #b0b0b0",
+            "completion-menu.meta.completion.current": "bg:#4a4a4a #ffffff",
+            "scrollbar.background": "bg:#2b2b2b",
+            "scrollbar.button": "bg:#6a6a6a",
+        }
+    )
+
+
+def _install_menu_above(session) -> None:
+    """Draw the completion menu *above* the prompt line.
+
+    prompt_toolkit floats its menu under the cursor with no way to flip it,
+    so the float is dropped and the same menu is stacked on top of the input
+    instead. VSplit + filler window keeps it at its natural width rather than
+    stretching across the terminal.
+    """
+    try:
+        from prompt_toolkit.layout import walk
+        from prompt_toolkit.layout.containers import (
+            FloatContainer,
+            HSplit,
+            VSplit,
+            Window,
+        )
+        from prompt_toolkit.layout.menus import (
+            CompletionsMenu,
+            MultiColumnCompletionsMenu,
+        )
+    except ImportError:
+        return
+
+    layout = session.app.layout
+    for container in walk(layout.container):
+        if isinstance(container, FloatContainer):
+            container.floats = [
+                f
+                for f in container.floats
+                if not isinstance(
+                    f.content, (CompletionsMenu, MultiColumnCompletionsMenu)
+                )
+            ]
+
+    menu = VSplit([CompletionsMenu(max_height=16, scroll_offset=1), Window()])
+    layout.container = HSplit([menu, layout.container])
 
 
 def read_user_input(prompt: str = "> ") -> str:
@@ -169,7 +257,16 @@ def read_user_input(prompt: str = "> ") -> str:
 
     global _pt_session
     if _pt_session is None:
-        _pt_session = PromptSession()
+        # reserve_space_for_menu=0 keeps prompt_toolkit from scrolling the
+        # terminal to make room below the cursor, which is what makes it
+        # draw the completion menu *above* the prompt line instead.
+        _pt_session = PromptSession(
+            completer=_slash_completer(),
+            complete_while_typing=True,
+            reserve_space_for_menu=0,
+            style=_slash_menu_style(),
+        )
+        _install_menu_above(_pt_session)
     return _pt_session.prompt(
         FormattedText([("bold ansicyan", prompt)]),
         placeholder=FormattedText([("ansibrightblack", prompt_placeholder())]),

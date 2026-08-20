@@ -17,8 +17,7 @@ graph TD
 
 ```mermaid
 graph TD
-    main[main.py] --> ui & agent_loop & sandbox & self_correction & tools
-    main -.-> memory & observability & orchestrator & llm
+    main[main.py shim] --> cli
 
     cli --> llm
     cli -.-> agent_loop & orchestrator & search & memory & tools & observability & knowledge & mcp_server & dashboard

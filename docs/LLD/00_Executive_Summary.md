@@ -3,15 +3,18 @@
 ## What this system is
 
 **Swarn** (package name `swarn`, version 2.0.0 per `pyproject.toml`) is a from-scratch
-autonomous AI engineering agent focused on machine-learning work. It is a single Python
-package (`agent/`, with subpackages `agent.llm` and `agent.search`) that offers **two
-complementary agent paradigms** plus a multi-agent coordination layer:
+autonomous AI engineering agent focused on machine-learning and data work. It is two Python
+packages — `agent/` (the loop and everything it depends on) and `swarn/` (self-contained
+*capabilities* the agent merely registers) — offering **two complementary agent paradigms**
+plus a multi-agent coordination layer:
 
 1. **A ReAct tool-calling loop** (`agent/core/agent_loop.py`) — the LLM is given a registry of
-   ~45 tools (file I/O, sandboxed code execution, repo-RAG semantic search, a full tabular-ML
-   pipeline from ingestion to deployment packaging, multimodal indexing, LoRA fine-tuning,
+   **75 tools** (file I/O, sandboxed code execution, repo-RAG semantic search, a full tabular-ML
+   pipeline from ingestion to deployment packaging, a human-in-the-loop cleaning/analysis/
+   reporting layer, visual document intelligence, multimodal indexing, LoRA fine-tuning,
    MCP client integration) and iterates *think → call tool → observe result* until it calls
-   `finish_task`, errors out, or hits an iteration cap.
+   `finish_task`, errors out, or hits an iteration cap. Full catalog:
+   [../TOOLS.md](../TOOLS.md) and [09_Tool_Execution.md](09_Tool_Execution.md).
 
 2. **An AIDE-style solution tree search** (`agent/search/`) — for "build the best model on
    this data" tasks. The engine drafts several complete solution scripts, executes each in a
@@ -31,8 +34,8 @@ Four entry points (see [03_Startup_Sequence.md](03_Startup_Sequence.md)):
 
 | Entry point | File | Purpose |
 |---|---|---|
-| `python main.py` | `main.py` | Interactive REPL (single agent + `team` command) |
-| `swarn <cmd>` | `agent/cli.py` | One-shot CLI: `run`, `team`, `solve`, `sessions`, `recall`, `index`, `playbook`, `serve`, `mcp-serve`, `guardrail-benchmark` |
+| `swarn` / `python main.py` | `agent/cli.py` | Interactive REPL. `main.py` is a thin shim forwarding argv — there is one REPL implementation, in the package. |
+| `swarn <cmd>` | `agent/cli.py` | One-shot CLI: `run`, `team`, `solve`, `sessions`, `recall`, `index`, `extract-pdf`, `to-csv`, `doc-inspect`, `ingest`, `ask`, `playbook`, `config`, `serve`, `mcp-serve`, `guardrail-benchmark` |
 | `swarn serve` | `agent/web/dashboard.py` | FastAPI web dashboard: live websocket step feed, session/search-run browsing, playbook view |
 | `swarn mcp-serve` | `agent/integrations/mcp_server.py` | MCP server exposing the platform (submit/status/messages/list) to Claude Code, Cursor, etc. |
 

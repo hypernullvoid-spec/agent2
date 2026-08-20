@@ -17,10 +17,10 @@ Recommendations live in [23_Recommendations.md](23_Recommendations.md).
    (`agent_loop.py:180–194`, `llm/base.py:156`). The REPL then dies with a traceback.
 3. **Guardrail findings split across instances** — the `get_guardrail_findings` tool reads
    the module singleton `get_guardrail_policy()` (`tools.py:1189–1191`), but
-   `main.py`/`cli.py`/`dashboard.py` construct their **own** `GuardrailPolicy` for the
+   `cli.py`/`dashboard.py` construct their **own** `GuardrailPolicy` for the
    loop. The tool can report "no findings" while the loop has flagged several. (The REPL's
    `guardrails` command reads the correct instance.)
-4. **Docker container can outlive one-shot CLI runs** — only `main.py` registers
+4. **Docker container can outlive one-shot CLI runs** — only the REPL path registers
    `atexit(close_sandbox)`. A `swarn run` that auto-detected Docker starts a persistent
    `tail -f /dev/null` container that is never stopped when the process exits
    (`auto_remove` only fires after a stop/kill). Search runs are safe (`finally:
@@ -59,10 +59,12 @@ Recommendations live in [23_Recommendations.md](23_Recommendations.md).
 
 ## C. Duplication
 
-- `WORKSPACE_DIR` computed independently in **seven** modules (`tools`, `execution`,
-  `data_pipeline`, `feature_engineering`, `evaluation`, `deployment`, `finetuning`); a
-  divergence in one silently splits the workspace.
-- `_safe_path` duplicated (`tools.py`, `data_pipeline.py`).
+- `WORKSPACE_DIR` is now defined once in `agent/paths.py` and imported — but **three**
+  modules still recompute it independently (`data_analysis.py:38`, `data_report.py:41`,
+  `ml/model_training.py:42`); a divergence in one silently splits the workspace. *(Was
+  seven; the rest were consolidated.)*
+- ~~`_safe_path` duplicated~~ — **resolved.** `tools.py` and `data_pipeline.py` both import
+  `safe_path` from `agent/paths.py`.
 - `load_cloud_storage`'s s3/gs branches are identical code.
 - `_embed_and_upsert` intentionally duplicates `ContextEngine`'s batching loop (commented
   as a trade-off).
@@ -92,16 +94,17 @@ Recommendations live in [23_Recommendations.md](23_Recommendations.md).
 
 - No logging framework — all diagnostics are `print()` or Rich console writes;
   no levels, no timestamps outside sessions.
-- OTel tracing is only reachable from `main.py` (REPL); `swarn run`/`serve`/`mcp-serve`
-  cannot enable it without code changes.
+- ~~OTel tracing is only reachable from the REPL~~ — **resolved.** Both `_run_interactive`
+  and `_run_headless` call `_make_observability_hooks()`, so `SWARN_ENABLE_TRACING` works
+  for `swarn run` and `swarn team`. `serve`/`mcp-serve` still cannot enable it.
 - The dashboard's `POST /api/run` blocks for the whole run (documented), so HTTP timeouts
   on long tasks surface as client errors while the run continues.
 
 ## G. Documentation drift (code vs docs)
 
 - `README.md` says "57 tests"; the suite currently has **58** `test_` functions.
-- `README.md`'s file map says `main.py` has a "provider-aware API-key check" — removed
-  (main no longer checks any key).
+- `README.md`'s file map says `main.py` has a "provider-aware API-key check" — removed.
+  `main.py` is now a 30-line shim to `agent.cli:main` and contains no logic at all.
 - `feature_engineering` docstring promises `apply_saved_transform` (see B).
 - Uncommitted working-tree change (`agent/search/runner.py`): a comment with typos
   ("runningn", trailing whitespace) replacing a blank line — cosmetic, should be cleaned

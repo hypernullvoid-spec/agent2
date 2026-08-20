@@ -9,7 +9,7 @@ of persistence stores.
 ```mermaid
 graph TB
     subgraph FrontEnds["Front ends (pick one per process)"]
-        REPL["main.py<br/>interactive REPL"]
+        REPL["agent/cli.py<br/>interactive REPL<br/>(main.py = shim)"]
         CLI["agent/cli.py<br/>swarn (Typer)"]
         WEB["agent/web/dashboard.py<br/>FastAPI + websocket"]
         MCPSRV["agent/integrations/mcp_server.py<br/>FastMCP (stdio)"]
@@ -63,8 +63,10 @@ graph TB
 The codebase has a de-facto four-layer structure (not formally enforced, but consistently
 followed):
 
-1. **Presentation** — `main.py`, `cli.py`, `dashboard.py`, `mcp_server.py`, `ui.py`.
-   Owns stdin/stdout/HTTP/stdio. Never contains agent logic beyond wiring.
+1. **Presentation** — `cli.py` (REPL + subcommands; `main.py` is a shim to it),
+   `dashboard.py`, `mcp_server.py`, `ui.py`, and `utils/terminal_display.py` with its
+   `classic/` and `lain/` themes. Owns stdin/stdout/HTTP/stdio. Never contains agent logic
+   beyond wiring.
 2. **Orchestration** — `agent_loop.py`, `orchestrator.py` + `roles.py`,
    `search/runner.py` + `search/agent.py`. Owns control flow: when to call the LLM, when to
    run tools/scripts, when to stop.

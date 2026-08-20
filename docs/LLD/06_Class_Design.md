@@ -366,6 +366,6 @@ classDiagram
 | `create_client()` (cached) | llm/router.py | BaseLLMClient per endpoint key |
 
 Note the subtlety: the `get_guardrail_findings` **tool** reads the module singleton
-`get_guardrail_policy()`, while `main.py`/`cli.py` construct their **own** `GuardrailPolicy`
+`get_guardrail_policy()`, while `cli.py` constructs its **own** `GuardrailPolicy`
 instances for the loop — so findings the loop collects are not the findings the tool
 reports (see [22_Technical_Debt.md](22_Technical_Debt.md)).

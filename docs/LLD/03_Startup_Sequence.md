@@ -4,61 +4,69 @@ There are four entry points. Each initializes only what it needs; heavy subsyste
 lazily imported inside functions (a consistent, commented convention: *"`swarn --help`
 shouldn't need to construct an LLMClient just to print usage text"* — `cli.py:60`).
 
-## 1. `python main.py` — interactive REPL
+## 1. `swarn` (no subcommand) — interactive REPL
 
-Files: `main.py`
+Files: `agent/cli.py` (`_run_interactive`). `main.py` is a 30-line shim that forwards argv
+to `agent.cli:main` and nothing else.
+
+> **Historical note.** `main.py` used to contain a second, hand-rolled REPL — a `while True`
+> around `input("you> ")` with its own command table and its own banner. It drifted from the
+> package REPL (commands existed in one and not the other; a fix to either left the other
+> stale) and was collapsed into the shim. The package is also the only version that works
+> from an *installed* copy, since a root-level module is not part of the `agent` package.
 
 ```mermaid
 sequenceDiagram
     participant U as User terminal
-    participant M as main.main()
-    participant ENV as dotenv
+    participant M as cli._run_interactive
     participant R as agent.llm.router (import)
-    participant S as SessionStore
     participant A as AgentLoop
+    participant D as terminal_display (theme)
 
-    U->>M: python main.py
-    M->>ENV: load_dotenv()
-    M->>R: from agent.llm import DEPLOYED_*  (router also calls load_dotenv at import)
+    U->>M: swarn
+    M->>M: _make_observability_hooks()   (SWARN_ENABLE_TRACING)
     M->>M: atexit.register(close_sandbox)
-    M->>M: ui.banner(...)  — prints capabilities + endpoint + workspace
-    M->>S: get_session_store() → _show_recent_sessions(3)
-    M->>M: policy = SelfCorrectionPolicy(max_consecutive=3)
     M->>M: guardrails = GuardrailPolicy()   (always on)
-    alt SWARN_ENABLE_TRACING == "1"
-        M->>M: observability_hooks = ObservabilityHooks(OTEL_EXPORTER_ENDPOINT)
-    end
-    M->>A: AgentLoop(correction_policy, guardrail_policy, observability_hooks)
+    M->>A: _create_agent(approval_callback=_Approver, keep_history, single_session)
+    A->>R: create_client() → cached OpenAICompatClient (no network call yet)
+    M->>A: atexit.register(agent.close_session)
+    M->>D: print_banner(model, tool_runtime)
+    M->>D: print_init_done(tool_count=len(TOOL_REGISTRY))
     loop REPL while True
-        U->>M: input("you> ")
-        M->>M: dispatch special command or…
+        U->>M: read_user_input()
+        M->>M: slash command / bare-word command / document subcommand …
         M->>A: agent.run(task)
     end
 ```
 
-Step-by-step (`main.py:71–216`):
+Step-by-step:
 
-1. `load_dotenv()` — reads `.env` into the environment.
-2. `from agent.llm import DEPLOYED_BASE_URL, DEPLOYED_MODEL_NAME` — importing
-   `agent/llm/router.py` itself calls `load_dotenv()` **again at module import time**
-   (`router.py:39`) and resolves the three `DEPLOYED_*` values from env-or-default. No API
-   key check is performed (comment: "No provider API key is required").
-3. `atexit.register(close_sandbox)` — guarantees the Docker container (if one was started)
+1. `_make_observability_hooks()` — returns `ObservabilityHooks(OTEL_EXPORTER_ENDPOINT)` when
+   `SWARN_ENABLE_TRACING` is set (`config.py:120`), else `None`.
+2. `atexit.register(close_sandbox)` — guarantees the Docker container, if one was started,
    is stopped on any exit.
-4. `ui.banner(...)` prints capabilities, the resolved endpoint, and the workspace path.
-   Note: `WORKSPACE_DIR` was already created as a **side effect of importing
-   `agent.runtime.tools`** (`tools.py:74–77` runs `os.makedirs` at import).
-5. `_show_recent_sessions(3)` — instantiates the `SessionStore` singleton (creates
-   `sessions/`, loads `index.json`).
-6. Constructs the long-lived policies and one `AgentLoop` (which constructs an `LLMClient`
-   → `create_client()` → cached `OpenAICompatClient`; the OpenAI SDK client object is built
-   here, but no network call happens until the first task).
-7. REPL loop: special commands (`exit/quit`, `history [n]`, `recall <id>`, `guardrails`,
-   `index <path>`, `clear`, `report`, `team <task>`) are handled inline with lazy imports;
-   anything else goes to `agent.run(task)`. Between tasks
-   `policy.consecutive_errors` is reset to 0 (total counters persist for the session).
-8. `team <task>` constructs a **new `Orchestrator` per invocation**, passing the *same*
-   guardrails/observability instances so findings aggregate across modes (`main.py:188–210`).
+3. `GuardrailPolicy()` is constructed unconditionally.
+4. **The `AgentLoop` is built *before* the banner, deliberately.** Constructing it resolves
+   the LLM client, which may print a routing notice; `print_init_done()` overwrites the
+   banner's `Tools: loading…` line by walking the cursor back a fixed number of rows, so
+   nothing may print in between. It is created with `keep_history=True` and
+   `single_session=True` — one sitting at the prompt is **one** session, so `history` lists
+   one entry per conversation rather than one per question — plus an `_Approver` callback
+   for tool approval.
+5. `atexit.register(agent.close_session)` — even an unhandled crash or a closed terminal
+   leaves a finalized session behind rather than one that looks still-running.
+   Turn-by-turn checkpointing already protects the content; this protects the closing state.
+6. `print_banner` / `print_init_done` render through `agent/utils/terminal_display.py`, which
+   forwards to whichever theme `SWARN_THEME` selects. `WORKSPACE_DIR` was already created as
+   a side effect of importing `agent.runtime.tools` (`os.makedirs` at import).
+7. REPL loop. Input is `lstrip`ed of a BOM first — piping a UTF-8-with-BOM script into stdin
+   otherwise turns the first `/help` into a task for the agent. Then: slash commands
+   (`/help`, `/plan`, `/new`, `/compact`, `/undo`, `/model`, `/effort`, `/status`,
+   `/resume`, `/share-traces`, `/yolo`), bare-word commands (`history`, `recall`, `index`,
+   `report`, `team`, `guardrails`), the document subcommands (`ask`, `ingest`, `inspect`,
+   `to-csv`, `extract-pdf` — dispatched through the *same* Click command the shell invokes,
+   see [13_APIs.md](13_APIs.md)), and anything else goes to `agent.run(task)`.
+8. `EOFError`/`KeyboardInterrupt` closes the session and breaks the loop.
 
 ## 2. `swarn <command>` — Typer CLI
 
@@ -75,13 +83,20 @@ Each sub-command then lazily imports and wires its subsystem:
 | `solve` | Validates `--data` dir (unless `--resume`); builds `SearchConfig` from flags (`steps`, `time_limit`, `drafts`, `exec_timeout`, `workers`, `token_budget`, `use_knowledge`/`reflect` = not `--no-learn`, models); `run_search(task, data, config, resume_run_id)`; exit 0 iff a best node exists |
 | `sessions` / `recall` | `get_session_store().list_sessions(n)` / `.recall_as_text(id)` |
 | `index` | `agent.runtime.tools.index_project(path)` |
+| `extract-pdf` / `to-csv` / `doc-inspect` / `ingest` / `ask` | Lazily import the matching `swarn.capabilities.*` module and call it directly — **no agent loop, no LLM client, no vector store**. These are also the commands the REPL re-dispatches into. |
+| `config` | `load_config()` → print the resolved configuration; `--path` prints the file location and exits |
 | `playbook` | `KnowledgeStore().playbook()`; `--clear` deletes `playbook.md` |
 | `guardrail-benchmark` | `get_benchmark_harness().run()` |
 | `serve` | `uvicorn.run("agent.web.dashboard:app", host, port)` — the dashboard module is imported by uvicorn, not here |
 | `mcp-serve` | `agent.integrations.mcp_server.main()` → `mcp.run()` (stdio) |
 
-Notably, **no observability hooks are wired in the CLI** — `SWARN_ENABLE_TRACING` is only
-honored by `main.py`'s REPL. `GuardrailPolicy` *is* wired in `run`/`team`.
+Both the REPL (`_run_interactive`) and headless mode (`_run_headless`) call
+`_make_observability_hooks()`, so `SWARN_ENABLE_TRACING` is honored in either. Tracing stays
+opt-in because span export adds console noise most runs don't want, and most environments
+have no collector to send spans to. `GuardrailPolicy` is always on.
+
+Headless mode passes **no approval callback**, so every tool call runs unprompted — it
+exists to be scriptable, and a prompt written to a stdin nobody is watching would hang.
 
 ## 3. `swarn serve` — dashboard startup
 
@@ -130,7 +145,7 @@ Files: `agent/integrations/mcp_server.py`
   (stops container with 5s timeout). Sessions are already persisted (each `run()` closes its
   session).
 - **CLI one-shots:** `typer.Exit(code)`; the same `atexit` hook is *not* registered (only
-  `main.py` registers it), but `run_search()` closes its own backend in a `finally`
+  the REPL path registers it), but `run_search()` closes its own backend in a `finally`
   (`runner.py:267–268`). A `swarn run` that started the process-wide Docker sandbox relies on
   the container's `auto_remove` + process exit. Unable to determine from the current
   implementation whether the persistent container is explicitly stopped in that path — it is

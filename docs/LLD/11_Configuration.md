@@ -21,13 +21,55 @@ honors `.env` without its own `load_dotenv()` call.
 | `SWARN_SANDBOX` | *(auto-detect)* | `execution.make_backend` (per call) | Force `docker` or `subprocess` |
 | `SWARN_EXEC_TIMEOUT` | `300` | `execution.py` (import) | Default per-exec timeout (s) for ReAct tools |
 | `SWARN_SANDBOX_IMAGE` | `python:3.11-slim` | `execution.py` (import) | Docker image |
+| `SWARN_SANDBOX_READY_IMAGE` | `swarn-sandbox:ready` | `execution.py` (import) | Pre-baked image reused instead of installing packages each boot |
+| `SWARN_SANDBOX_PACKAGES` | `pandas numpy scipy scikit-learn matplotlib openpyxl` | `execution.py` (import) | Packages installed into a fresh sandbox. Set to `""` to skip; imports then fail at run time with a pointer back to this var |
+| `SWARN_SANDBOX_INSTALL_TIMEOUT` | `900` | `execution.py` (import) | Seconds allowed for that install |
 | `SWARN_MAX_ITERATIONS` | `30` | `agent_loop.py` (import) | ReAct iteration cap |
 | `SWARN_CONTEXT_CHAR_BUDGET` | `400000` | `agent_loop.py` (import) | Compaction threshold (chars) |
+| `SWARN_BUDGET_WARN_AT` | `8` | `config.py` (import) | Iterations remaining when the loop starts warning it is running out |
+| `SWARN_BUDGET_FINAL_AT` | `3` | `config.py` (import) | Iterations remaining at the final "wrap up now" notice |
+| `SWARN_AUTO_APPROVE` | unset | `cli.py`, `approval_policy` (use time) | `1`/`true`/`yes` auto-approves every gated tool call. Same effect as `/yolo`; also removes the human gate in front of destructive data operations |
 | `SWARN_SEARCH_WORKERS` | `1` | `SearchConfig` field default (instantiation) | Parallel search workers |
 | `SWARN_CODE_MODEL` / `SWARN_FEEDBACK_MODEL` | deployed model | `SearchConfig` field defaults | Display labels; **only `mock:*` changes routing** (tests) |
 | `SWARN_KNOWLEDGE_DIR` | `<repo>/knowledge` | `KnowledgeStore.__init__` | Playbook + runs.db location |
-| `SWARN_ENABLE_TRACING` | unset | `main.py` only | `"1"` wires `ObservabilityHooks` into the REPL's AgentLoop |
-| `OTEL_EXPORTER_ENDPOINT` | unset | `main.py` → `ObservabilityHooks` | OTLP gRPC target; console exporter otherwise |
+| `SWARN_ARTIFACTS_DIR` | `<repo>/artifacts` | `config.py` (import) | Where capabilities write annotated images and ingested documents |
+| `SWARN_ENABLE_TRACING` | unset | `cli.py` | `"1"` wires `ObservabilityHooks` into the REPL's AgentLoop |
+| `SWARN_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | `web/dashboard.py` | Comma-separated allowed origins for the dashboard API |
+| `OTEL_EXPORTER_ENDPOINT` | unset | `ObservabilityHooks` | OTLP gRPC target; console exporter otherwise |
+
+### Terminal UI
+
+| Variable | Default | Read in | Effect |
+|---|---|---|---|
+| `SWARN_THEME` | `classic` | `utils/terminal_display.py` (use time) | Selects the display implementation: `classic` (green-on-black CRT) or `lain` (YAML-driven palette). Callers import the selector module, never a theme directly |
+| `SWARN_NO_BOOT_ANIM` | unset | `utils/classic/*` | `1` suppresses the boot animation |
+
+### Document intelligence
+
+| Variable | Default | Read in | Effect |
+|---|---|---|---|
+| `SWARN_VLM_MODEL` | `qwen2.5-vl-7b-instruct` | `doc_intelligence.py` (use time) | Vision model for the `vlm` backend |
+| `SWARN_VLM_BASE_URL` | `""` | `doc_intelligence.py` | OpenAI-compatible base URL for that model |
+| `SWARN_VLM_API_KEY` | `""` | `doc_intelligence.py` | Its key. Without one, the `vlm` backend is unavailable and extraction falls back to `text`/`ocr` |
+| `SWARN_DOC_BACKEND` | `auto` | `doc_intelligence.py` | Force `vlm`, `text`, `ocr` or `mock` instead of auto-selecting. `mock` is synthetic sample data and is never chosen automatically for a real document |
+
+### Cleaning, profiling and reporting thresholds
+
+These tune *judgement calls* — when a column is too empty to keep, when a number is an
+outlier, when a report should flag its own data as stale. They are read at module import.
+
+| Variable | Default | Read in | Effect |
+|---|---|---|---|
+| `SWARN_CLEAN_COL_NULL_DROP` | `0.5` | `data_cleaner.py` | Null fraction above which dropping a column is proposed |
+| `SWARN_CLEAN_ROW_NULL_DROP` | `0.5` | `data_cleaner.py` | Same, per row |
+| `SWARN_CLEAN_OUTLIER_Z` | `3.0` | `data_cleaner.py` | z-score at which a value is called an outlier |
+| `SWARN_PLACEHOLDER_SHARE` | `0.75` | `data_report.py` | Token share above which report prose is judged unfilled placeholder text |
+| `SWARN_THIN_ROWS_PER_LEVEL` | `20` | `data_report.py` | Rows per category level below which a breakdown is called too thin to report |
+| `SWARN_SEASONALITY_MIN_DAYS` | `400` | `data_report.py` | Span needed before seasonality may be claimed |
+| `SWARN_STALE_DATA_DAYS` | `365` | `data_report.py` | Age past which the report flags the data as stale |
+| `SWARN_MONEY_TOKENS` / `SWARN_COST_TOKENS` | built-in lists | `data_report.py` | Comma-separated column-name hints for detecting money and cost columns |
+| `SWARN_CATEGORY_SAME_DOMAIN` | `0.6` | `ml/data_pipeline.py` | Jaccard overlap at which two categorical columns are treated as the same domain |
+| `SWARN_CATEGORY_LEAK_SHARE` | `0.5` | `ml/data_pipeline.py` | Share at which a category is flagged as leaking the target |
 | `OPENAI_API_KEY` | — | `openai_client.py` fallback | Used only if no key passed (deployed path always passes one) |
 | `NO_COLOR` | — | Rich (via `ui.py`) | Disables ANSI colors |
 | AWS/GCP credential vars | — | pandas/boto3/gcsfs | Only for `load_cloud_data` |

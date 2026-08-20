@@ -32,6 +32,21 @@ def my_tool(arg: str) -> str:
    `roles.py` if team mode should see it.
 4. Nothing else: `AgentLoop` picks it up automatically via `get_tool_definitions()`.
 
+**Alternative: lazy registration.** If the tool pulls in a heavy dependency (matplotlib,
+scipy, pdfplumber), don't decorate it in `tools.py` — importing `tools.py` must stay cheap
+for a caller that only wanted `read_file`. Follow the analyst modules instead: put the tools
+in their own module with a `_SWARN_TOOLS` dict of `name -> (description, schema, fn)` and a
+`register_*()` function that inserts them into `TOOL_REGISTRY`, skipping names already
+present so a repeat call is a no-op and a built-in wins any collision. Then call
+`register_*()` from the CLI's boot path.
+
+**Alternative: a capability.** If the unit of work has its own schemas, artifacts and CLI
+surface, and should run without an agent at all, it belongs in `swarn/capabilities/` — see
+[05_Module_Design.md](05_Module_Design.md). Keep the import direction one-way (`agent/`
+imports `swarn/`, never the reverse at import time), import nothing eagerly from
+`capabilities/__init__.py`, and reach back into `agent.*` helpers only via a lazy import
+inside the function that needs one.
+
 ## Add a new role to the team pipeline
 
 1. `agent/core/roles.py`: define `<ROLE>_TOOLS` (allow-list; typos are silently dropped, so
