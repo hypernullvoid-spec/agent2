@@ -75,7 +75,9 @@ _NEGATIONS = (
     "no apparent", "no discernible", "little or no", "weak or no",
 )
 
-_EVIDENCE: dict = {"correlations": {}, "imputed_groups": {}, "rankings": {}, "durations": {}}
+_EVIDENCE: dict = {"correlations": {}, "imputed_groups": {}, "rankings": {},
+                   "durations": {}, "joins": [], "truncation": {}, "grain": {},
+                   "reconciliations": [], "effects": []}
 
 
 def reset_evidence() -> None:
@@ -83,6 +85,11 @@ def reset_evidence() -> None:
     _EVIDENCE["imputed_groups"] = {}
     _EVIDENCE["rankings"] = {}
     _EVIDENCE["durations"] = {}
+    _EVIDENCE["joins"] = []
+    _EVIDENCE["truncation"] = {}
+    _EVIDENCE["grain"] = {}
+    _EVIDENCE["reconciliations"] = []
+    _EVIDENCE["effects"] = []
 
 
 def note_correlation(x, y, r) -> None:
@@ -93,6 +100,86 @@ def note_correlation(x, y, r) -> None:
         return
     if value == value:                     # not NaN
         _EVIDENCE["correlations"][tuple(sorted((str(x), str(y))))] = value
+
+
+def note_join(record) -> None:
+    """Record a join so the report must disclose it.
+
+    A join is the only analysis step that can change every total in the
+    dataset without changing anything a reader can see. data_report.py used to
+    detect one after the fact by spotting pandas' _x/_y name-clash suffixes —
+    which fires only when the two tables happened to share a column name, so a
+    clean join stayed invisible and its dropped rows were never mentioned.
+    Recording it at the moment it happens is the only way the Methodology
+    section can state the keys, the direction and the row-count effect.
+    """
+    if isinstance(record, dict) and record.get("output"):
+        _EVIDENCE.setdefault("joins", []).append(dict(record))
+
+
+def note_effect(dataset, record) -> None:
+    """Record how BIG a difference was, not just whether it was real.
+
+    Held separately from the p-value because the report needs to police a
+    specific failure: a narrative calling a negligible-but-significant gap an
+    outperformance. Without the effect size on record there is no way to tell
+    that claim from a correct one.
+    """
+    if isinstance(record, dict) and record.get("group_col"):
+        _EVIDENCE.setdefault("effects", []).append({"dataset": str(dataset), **record})
+
+
+def effects_for(dataset) -> list:
+    return [e for e in _EVIDENCE.get("effects", []) if e.get("dataset") == str(dataset)]
+
+
+def note_grain(dataset, record) -> None:
+    """Record that a table is not one row per what it claims to be.
+
+    Kept with the other evidence because it changes the meaning of every total
+    computed from the table, and because nothing about the frame afterwards
+    shows it — a doubled order looks exactly like two orders.
+    """
+    if isinstance(record, dict) and record.get("keys"):
+        _EVIDENCE.setdefault("grain", {})[str(dataset)] = dict(record)
+
+
+def grain_for(dataset) -> dict:
+    """What check_grain found for this table — {} if it was never checked."""
+    return _EVIDENCE.get("grain", {}).get(str(dataset), {})
+
+
+def note_reconciliation(record) -> None:
+    """Record a comparison against a figure from outside this analysis."""
+    if isinstance(record, dict) and record.get("label"):
+        _EVIDENCE.setdefault("reconciliations", []).append(dict(record))
+
+
+def reconciliations_for(dataset) -> list:
+    return [r for r in _EVIDENCE.get("reconciliations", [])
+            if r.get("dataset") == str(dataset)]
+
+
+def note_truncation(dataset, record) -> None:
+    """Record that a dataset is only part of its file.
+
+    A partial read is invisible in the frame itself — 2 million rows look
+    exactly like 2 million rows whether or not another 3 million were left on
+    disk. Nothing downstream can rediscover the shortfall, so the only place it
+    can be caught is here, at the moment of reading.
+    """
+    if isinstance(record, dict) and record.get("rows_total"):
+        _EVIDENCE.setdefault("truncation", {})[str(dataset)] = dict(record)
+
+
+def truncation_for(dataset) -> dict:
+    """What was left unread when `dataset` was loaded — {} if it was read whole."""
+    return _EVIDENCE.get("truncation", {}).get(str(dataset), {})
+
+
+def joins_for(dataset) -> list:
+    """Every recorded join that produced `dataset`, newest last."""
+    return [j for j in _EVIDENCE.get("joins", []) if j.get("output") == str(dataset)]
 
 
 def note_imputed_groups(column, group_labels) -> None:
@@ -650,6 +737,13 @@ CODE_GAP_RATIO = 5.0            # span-per-distinct-value that marks a coded set
 _PLAUSIBLE_YEARS = (1800, 2100)
 
 
+# Column names that state outright that the numbers are labels. Deliberately
+# excludes 'level', 'grade', 'score', 'rating' — those are genuinely ordinal
+# and their averages mean something.
+_CODE_NAME_SUFFIXES = ("_code", "code", "_status", "status", "_flag", "flag",
+                       "_type", "type", "_category", "category", "_class", "class")
+
+
 def _looks_like_coded_categorical(s: pd.Series) -> bool:
     """True when an integer column is a set of LABELS rather than a quantity.
 
@@ -671,9 +765,33 @@ def _looks_like_coded_categorical(s: pd.Series) -> bool:
         return False
     if levels > max(2, CODE_MAX_SHARE * n):
         return False                      # too varied to be a small code set
-    lo, hi = float(valid.min()), float(valid.max())
+
+    # The spread is measured over values that RECUR, not over every value seen.
+    # Measuring min-to-max lets a single mistyped entry decide the answer: a
+    # quantity column of 1-15 with one 9,999 in it spans 9,998, clears the gap
+    # test on that alone, and gets reclassified as a code — after which its
+    # average is declared meaningless and it is dropped from the correlation
+    # map. One fat-finger entry silently removes a real measure from the
+    # analysis, which is the opposite of what this guard is for. A genuine code
+    # recurs; a typo does not, so values seen once or twice are excluded.
+    counts = valid.value_counts()
+    support = max(2, int(0.001 * n))
+    recurring = counts[counts >= support]
+    if len(recurring) < 2:
+        return False
+    lo, hi = float(recurring.index.min()), float(recurring.index.max())
+    levels = int(len(recurring))
+
     if lo >= _PLAUSIBLE_YEARS[0] and hi <= _PLAUSIBLE_YEARS[1] and hi - lo <= 200:
         return False                      # a span of years is ordinal, not a code
+
+    # Densely-packed small integers (1-5 ratings, 1-3 statuses) fail the gap
+    # test by design, because averaging a Likert scale IS meaningful and the
+    # shape alone cannot tell a rating from a status. The NAME can, and it is
+    # the only evidence available, so a column explicitly called a code or a
+    # status is taken at its word.
+    if str(s.name or "").lower().endswith(_CODE_NAME_SUFFIXES):
+        return True
     return (hi - lo) >= CODE_GAP_RATIO * levels
 
 
@@ -1465,6 +1583,84 @@ def plot_relationship(name: str, x: str, y: str) -> str:
 
 # ─── 2b. does the relationship hold within groups? ─────────────────────────────
 
+def _subgroup_rates(df, name, x, y, by, min_rows, top) -> str:
+    """Does the group that wins overall also win inside every subgroup?
+
+    The pooled winner can lose everywhere at once, and it happens whenever the
+    groups are mixed differently across the subgroups: a treatment given mostly
+    to easy cases posts a better overall rate while being worse on easy cases
+    AND worse on hard ones. The pooled number is not wrong arithmetic — it is
+    the wrong question, and no amount of significance testing on it helps.
+    """
+    work = df[[x, y, by]].dropna()
+    if len(work) < min_rows:
+        return f"Error: only {len(work)} complete row(s) — too few to split into groups."
+    if work[x].nunique() < 2:
+        return f"Error: '{x}' has only one value, so there is nothing to compare."
+    if work[x].nunique() > HIGH_CARDINALITY:
+        return (f"Error: '{x}' has {work[x].nunique()} values — too many to compare. "
+                f"Use a column with a handful of levels.")
+
+    labels_x = work[x].astype(str)
+    overall = work.groupby(labels_x)[y].agg(["mean", "count"]).sort_values("mean",
+                                                                          ascending=False)
+    winner, loser = str(overall.index[0]), str(overall.index[-1])
+
+    rows = []
+    for label, part in work.groupby(work[by].astype(str)):
+        if len(part) < min_rows:
+            continue
+        inner = part.groupby(part[x].astype(str))[y].agg(["mean", "count"])
+        if winner not in inner.index or loser not in inner.index:
+            continue
+        rows.append((str(label), int(len(part)),
+                     float(inner.loc[winner, "mean"]), int(inner.loc[winner, "count"]),
+                     float(inner.loc[loser, "mean"]), int(inner.loc[loser, "count"])))
+    if len(rows) < 2:
+        return (f"Only {len(rows)} group(s) in '{by}' contain both '{winner}' and '{loser}' "
+                f"with {min_rows}+ rows, so the comparison cannot be checked across groups. "
+                f"Overall: '{winner}' {overall.loc[winner, 'mean']:.3g} vs '{loser}' "
+                f"{overall.loc[loser, 'mean']:.3g}.")
+
+    lines = [f"Comparing '{y}' between values of '{x}', checked inside each '{by}':",
+             f"  OVERALL ({len(work):,} rows):"]
+    for label, row in overall.iterrows():
+        lines.append(f"    {_clean_label(str(label), 26)}: {row['mean']:.4g} "
+                     f"({int(row['count']):,} rows)")
+    lines.append(f"  → '{winner}' looks best overall.")
+    lines.append(f"  WITHIN each '{by}' ({len(rows)} group(s) with {min_rows}+ rows):")
+
+    reversed_in = []
+    for label, n, w_mean, w_n, l_mean, l_n in rows[:top]:
+        flipped = l_mean > w_mean
+        if flipped:
+            reversed_in.append(label)
+        mark = "   ← reversed" if flipped else ""
+        lines.append(f"    {_clean_label(label, 20)} (n={n:,}): '{winner}' {w_mean:.4g} "
+                     f"(n={w_n:,})  vs  '{loser}' {l_mean:.4g} (n={l_n:,}){mark}")
+    # count reversals across ALL groups, not only the ones shown
+    reversed_all = [r[0] for r in rows if r[4] > r[2]]
+
+    if len(reversed_all) == len(rows):
+        lines.append(
+            f"  ⚠ SIMPSON'S PARADOX. '{winner}' wins overall but LOSES to '{loser}' in EVERY "
+            f"single '{by}'. The overall figure is not a summary of these groups — it is an "
+            f"artefact of how '{x}' is distributed across them ('{winner}' is concentrated in "
+            f"the easier groups). Reporting the overall number would recommend the worse "
+            f"option. Quote the per-'{by}' figures instead, and if you need one headline "
+            f"number, weight the groups equally rather than by their size.")
+    elif reversed_all:
+        lines.append(
+            f"  ⚠ THE WINNER REVERSES in {len(reversed_all)} of {len(rows)} group(s) "
+            f"({', '.join(repr(g) for g in reversed_all[:4])}). The overall comparison hides "
+            f"opposite results, so it cannot be reported on its own — state it per '{by}'.")
+    else:
+        lines.append(f"  '{winner}' wins in every '{by}' as well as overall, so the headline "
+                     f"comparison is safe to report.")
+    lines.append("  A difference in rates still does not tell you why it exists.")
+    return "\n".join(lines)
+
+
 def check_subgroups(name: str, x: str, y: str, by: str,
                     min_rows: int = SUBGROUP_MIN_ROWS, top: int = 12) -> str:
     """Recompute the x~y relationship inside each group of `by`.
@@ -1479,9 +1675,19 @@ def check_subgroups(name: str, x: str, y: str, by: str,
     missing = [c for c in (x, y, by) if c not in df.columns]
     if missing:
         return f"Error: column(s) {missing} not in '{name}'. Columns: {list(df.columns)}"
-    for col in (x, y):
-        if not _is_numeric(df[col]):
-            return f"Error: '{col}' must be a number column to correlate."
+    if not _is_numeric(df[y]):
+        return (f"Error: '{y}' must be a number column — it is the outcome being compared. "
+                f"For a yes/no outcome, encode it as 1/0 first.")
+    if not _is_numeric(df[x]):
+        # The RATE form of the same paradox. Simpson's has two shapes and this
+        # tool used to cover only one: a correlation that reverses inside its
+        # groups. The other — one treatment beating another overall while
+        # losing in every subgroup — is the textbook case (Berkeley admissions,
+        # the kidney-stone trial) and by far the more common one in business:
+        # "the new checkout converts better overall, but worse on both mobile
+        # AND desktop". Refusing it sent exactly the question this tool exists
+        # for to a tool that cannot answer it.
+        return _subgroup_rates(df, name, x, y, by, min_rows, top)
 
     work = df[[x, y, by]].dropna()
     if len(work) < min_rows:
@@ -1757,6 +1963,85 @@ def pivot_dataset(name: str, rows: list, columns: Optional[list] = None,
 _FREQ_WORDS = {"D": "daily", "W": "weekly", "ME": "monthly", "M": "monthly",
                "QE": "quarterly", "Q": "quarterly", "YE": "yearly", "Y": "yearly"}
 
+# How many periods back the same-period-last-year comparison sits, by frequency.
+_SEASONAL_LAG = {"ME": 12, "M": 12, "QE": 4, "Q": 4, "W": 52, "D": 365}
+
+# A period-on-period % change computed off a base this much smaller than the
+# typical period is arithmetic, not news: a month that recorded 3 orders
+# followed by one that recorded 110 is "+3,567%", and reporting that as the
+# biggest rise buries whatever actually happened.
+LOW_BASE_RATIO = float(os.environ.get("SWARN_LOW_BASE_RATIO", "0.2"))
+
+
+def _period_end(stamp, freq: str):
+    """The last instant the bucket labelled `stamp` covers."""
+    try:
+        return stamp.to_period(_PERIOD_ALIAS.get(freq, freq)).end_time
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_PERIOD_ALIAS = {"ME": "M", "QE": "Q", "YE": "Y", "W": "W", "D": "D",
+                 "M": "M", "Q": "Q", "Y": "Y"}
+
+
+def _partial_last_period(dates, series, freq: str) -> dict:
+    """Is the final bucket still being filled?
+
+    This is the single most common false alarm in reporting. An extract pulled
+    on the 8th puts 8 days of sales in the newest month and compares them
+    against a full 31 — the tool announces a 74% collapse, somebody takes it to
+    a meeting, and the month ends up perfectly normal. Nothing about the shape
+    of the data reveals it; the only evidence is that the last date in the file
+    falls short of the end of the period it belongs to.
+
+    Returns {} when the last period is complete.
+    """
+    if series.empty:
+        return {}
+    last_label = series.index[-1]
+    end = _period_end(last_label, freq)
+    latest = dates.max()
+    if end is None or pd.isna(latest):
+        return {}
+    # Compared at DAY resolution, not to the last instant of the period. Daily
+    # data stamps every row at midnight, so a month that ran to its final day
+    # still ends 23h59m short of its own end_time — comparing exactly would
+    # flag every complete month as unfinished, which is the same false alarm
+    # this function exists to prevent, only inverted and firing constantly.
+    try:
+        if latest.normalize() >= end.normalize():
+            return {}
+    except AttributeError:
+        if latest >= end:
+            return {}
+    start = getattr(last_label, "to_period", lambda _f: None)(_PERIOD_ALIAS.get(freq, freq))
+    try:
+        span = (end - start.start_time).total_seconds()
+        done = (latest - start.start_time).total_seconds()
+    except Exception:  # noqa: BLE001
+        return {}
+    if span <= 0:
+        return {}
+    share = max(0.0, min(1.0, done / span))
+    if share >= 0.995:                       # complete to within rounding
+        return {}
+    return {"label": last_label, "share": share, "latest": latest, "end": end,
+            "value": float(series.iloc[-1])}
+
+
+def _year_on_year(series, freq: str):
+    """Same period last year, which is the comparison most trends actually need.
+
+    December always beats November and January always falls; against last
+    December, neither is news. Returns None when the history is too short for
+    the comparison to exist.
+    """
+    lag = _SEASONAL_LAG.get(freq)
+    if not lag or len(series) <= lag:
+        return None
+    return (series / series.shift(lag) - 1.0) * 100
+
 
 def analyze_over_time(name: str, date_col: str, freq: str = "ME",
                       value_col: Optional[str] = None, how: str = "sum",
@@ -1805,11 +2090,20 @@ def analyze_over_time(name: str, date_col: str, freq: str = "ME",
         return f"No periods produced for '{name}' — check '{date_col}'."
 
     change = series.pct_change() * 100
-    result = pd.DataFrame({
+    partial = _partial_last_period(dates, series, freq)
+    yoy = _year_on_year(series, freq)
+    columns = {
         str(date_col): series.index.astype(str),
         "value": series.values,
         "change_pct": change.values.round(2),
-    })
+    }
+    if yoy is not None:
+        columns["vs_same_period_last_year_pct"] = yoy.values.round(2)
+    if partial:
+        # Carried on the frame as well as in the text, so code that reads the
+        # registered result rather than the message still knows.
+        columns["period_complete"] = [True] * (len(series) - 1) + [False]
+    result = pd.DataFrame(columns)
     out = output_name or f"{name}_over_time"
     _register(out, result)
 
@@ -1822,24 +2116,66 @@ def analyze_over_time(name: str, date_col: str, freq: str = "ME",
     fig.autofmt_xdate()
     rel = _save_fig(fig, f"{_safe_name(name)}__{_safe_name(date_col)}_{_safe_name(freq)}_trend.png")
 
-    first, last = float(series.iloc[0]), float(series.iloc[-1])
+    # Every headline below is computed on the SETTLED series. A period that is
+    # still filling is not a smaller period, it is an unfinished one, and
+    # letting it into a first-to-last comparison or a "biggest fall" is how a
+    # report announces a collapse that is really just the current month.
+    settled = series.iloc[:-1] if partial and len(series) > 1 else series
+    settled_change = change.iloc[:-1] if partial and len(change) > 1 else change
+
+    first, last = float(settled.iloc[0]), float(settled.iloc[-1])
     overall = (last - first) / abs(first) * 100 if first else float("nan")
     direction = "up" if last > first else "down" if last < first else "flat"
     lines = [
         f"Trend chart saved to {rel}",
         f"  {_FREQ_WORDS.get(freq, freq)} {measure}, {len(series)} period(s), "
         f"registered as '{out}'.",
-        f"  {series.index[0]:%Y-%m-%d} → {series.index[-1]:%Y-%m-%d}: "
+        f"  {settled.index[0]:%Y-%m-%d} → {settled.index[-1]:%Y-%m-%d}: "
         f"{_fmt(first)} → {_fmt(last)}, {direction}"
         + (f" {overall:+.1f}%." if np.isfinite(overall) else "."),
     ]
-    if len(series) > 1:
-        biggest_up = change.idxmax()
-        biggest_down = change.idxmin()
+
+    if partial:
+        lines.append(
+            f"  ⚠ THE LAST PERIOD IS NOT FINISHED. '{partial['label']:%Y-%m-%d}' covers up to "
+            f"{partial['latest']:%Y-%m-%d} — about {partial['share']:.0%} of the period — but "
+            f"it is charted against complete ones, so it will look like a fall whatever is "
+            f"happening. Its value ({_fmt(partial['value'])}) is EXCLUDED from every figure "
+            f"above and from the biggest rise/fall below. Do not report it as a decline; "
+            f"compare it with the same {partial['share']:.0%} of an earlier period, or wait "
+            f"for the period to close.")
+
+    if len(settled_change.dropna()) > 1:
+        # A change measured against a near-empty period is arithmetic, not news.
+        typical = float(settled.median()) if len(settled) else 0.0
+        base = settled.shift(1)
+        trustworthy = settled_change[base.abs() >= abs(typical) * LOW_BASE_RATIO]
+        noisy = int(len(settled_change.dropna()) - len(trustworthy.dropna()))
+        source = trustworthy if len(trustworthy.dropna()) else settled_change
+        biggest_up, biggest_down = source.idxmax(), source.idxmin()
         if pd.notna(biggest_up):
-            lines.append(f"  Biggest rise: {biggest_up:%Y-%m-%d} ({change.max():+.1f}%).")
+            lines.append(f"  Biggest rise: {biggest_up:%Y-%m-%d} ({source.max():+.1f}%).")
         if pd.notna(biggest_down):
-            lines.append(f"  Biggest fall: {biggest_down:%Y-%m-%d} ({change.min():+.1f}%).")
+            lines.append(f"  Biggest fall: {biggest_down:%Y-%m-%d} ({source.min():+.1f}%).")
+        if noisy and len(trustworthy.dropna()):
+            lines.append(
+                f"  ({noisy} period(s) excluded from those two: each followed a period smaller "
+                f"than {LOW_BASE_RATIO:.0%} of the typical {_fmt(typical)}, so their percentage "
+                f"swings are an artefact of a near-empty base, not a real move.)")
+
+    if yoy is not None:
+        settled_yoy = yoy.iloc[:-1] if partial and len(yoy) > 1 else yoy
+        recent = settled_yoy.dropna()
+        if len(recent):
+            lines.append(
+                f"  vs SAME PERIOD LAST YEAR: latest is {recent.iloc[-1]:+.1f}%; "
+                f"typical across the year {recent.median():+.1f}%. This is the comparison to "
+                f"quote — period-on-period change mostly measures the calendar.")
+    elif freq in _SEASONAL_LAG:
+        lines.append(
+            f"  No year-on-year comparison — the data covers {len(series)} period(s) and "
+            f"{_SEASONAL_LAG[freq] + 1} are needed. Every change above is period-on-period, "
+            f"which cannot separate a real move from an ordinary seasonal one.")
     # How the dates were read decides every number above it, so it is stated with
     # them rather than left for anyone to assume.
     lines += ["  " + n for n in date_notes]
@@ -1847,6 +2183,75 @@ def analyze_over_time(name: str, date_col: str, freq: str = "ME",
     if len(result) > 15:
         lines.append(f"\n  ...{len(result) - 15} more period(s) in '{out}'.")
     return "\n".join(lines)
+
+
+# ─── effect size ───────────────────────────────────────────────────────────────
+#
+# A significance test answers "is this difference real?". It does not answer
+# "is it big?", and the two come apart precisely where it matters most. With
+# 500,000 rows a 0.3% gap between two groups returns p < 0.001 — genuinely
+# real, and worth nobody's time. Reporting only the p-value licenses "Region A
+# significantly outperforms Region B" for a difference no one could act on,
+# which is a more credible way of being useless than saying nothing.
+#
+# So both are always reported: whether it is real, and how big it is. Cohen's d
+# for two groups, eta-squared for more, each with the plain-language reading.
+
+def _cohens_d(a, b) -> float:
+    """Difference in means measured in standard deviations."""
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return float("nan")
+    va, vb = np.var(a, ddof=1), np.var(b, ddof=1)
+    pooled = ((na - 1) * va + (nb - 1) * vb) / (na + nb - 2)
+    if pooled <= 0:
+        return float("nan")
+    return float((np.mean(a) - np.mean(b)) / np.sqrt(pooled))
+
+
+def _eta_squared(samples) -> float:
+    """Share of the variation in the values explained by which group they are in."""
+    values = np.concatenate([np.asarray(s, dtype=float) for s in samples])
+    if len(values) < 2:
+        return float("nan")
+    grand = values.mean()
+    between = sum(len(s) * (np.mean(s) - grand) ** 2 for s in samples)
+    total = float(((values - grand) ** 2).sum())
+    return float(between / total) if total > 0 else float("nan")
+
+
+def _effect_words(kind: str, value: float) -> str:
+    """Plain reading of an effect size — the sentence a stakeholder can use."""
+    if not np.isfinite(value):
+        return ""
+    size = abs(value)
+    if kind == "d":
+        band = ("negligible" if size < 0.2 else "small" if size < 0.5
+                else "moderate" if size < 0.8 else "large")
+        return (f"Cohen's d = {value:+.2f} ({band}) — the groups overlap "
+                f"{'almost completely' if size < 0.2 else 'heavily' if size < 0.5 else 'substantially' if size < 0.8 else 'only partly'}")
+    band = ("negligible" if size < 0.01 else "small" if size < 0.06
+            else "moderate" if size < 0.14 else "large")
+    return (f"eta-squared = {value:.3f} ({band}) — which group a row is in explains "
+            f"{value:.1%} of the variation in the values")
+
+
+def _size_verdict(kind: str, value: float, significant: bool) -> str:
+    """The one line that stops a real-but-tiny difference being reported as news."""
+    if not np.isfinite(value):
+        return ""
+    negligible = abs(value) < (0.2 if kind == "d" else 0.01)
+    if significant and negligible:
+        return ("  ⚠ REAL BUT NOT MEANINGFUL. The test says this difference is unlikely to be "
+                "chance, which with enough rows is true of almost any difference. The effect "
+                "is negligible: the groups are practically the same. Do NOT describe this as "
+                "one group outperforming another, and do not build a recommendation on it.")
+    if significant:
+        return "  This difference is both real and large enough to act on."
+    if not negligible:
+        return ("  The gap is sizeable but the test cannot rule out chance — usually too few "
+                "rows. Worth measuring again with more data rather than dismissing.")
+    return "  Neither real nor large. Treat the groups as the same."
 
 
 # ─── 6. compare groups ─────────────────────────────────────────────────────────
@@ -1889,9 +2294,11 @@ def compare_groups(name: str, value_col: str, group_col: str) -> str:
     if len(samples) == 2:
         stat, p = stats.ttest_ind(samples[0], samples[1], equal_var=False)
         test = "Welch t-test"
+        effect_kind, effect = "d", _cohens_d(samples[0], samples[1])
     else:
         stat, p = stats.f_oneway(*samples)
         test = "one-way ANOVA"
+        effect_kind, effect = "eta2", _eta_squared(samples)
 
     top, bottom = summary.index[0], summary.index[-1]
     gap = summary["mean"].iloc[0] - summary["mean"].iloc[-1]
@@ -1900,12 +2307,31 @@ def compare_groups(name: str, value_col: str, group_col: str) -> str:
                  + (f" ({rel_gap:+.1f}%)." if np.isfinite(rel_gap) else "."))
     if pd.isna(p):
         lines.append(f"  {test} could not be computed (check for zero variance).")
-    elif p < 0.05:
-        lines.append(f"  This difference is UNLIKELY to be chance ({test}, p = {p:.4g}).")
+        return "\n".join(lines)
+
+    significant = bool(p < 0.05)
+    if significant:
+        lines.append(f"  IS IT REAL?  Unlikely to be chance ({test}, p = {p:.4g}).")
     else:
-        lines.append(f"  This difference could easily be chance ({test}, p = {p:.4g}) — "
+        lines.append(f"  IS IT REAL?  Could easily be chance ({test}, p = {p:.4g}) — "
                      "treat the groups as similar until you have more data.")
+    words = _effect_words(effect_kind, effect)
+    if words:
+        lines.append(f"  IS IT BIG?   {words}.")
+        verdict = _size_verdict(effect_kind, effect, significant)
+        if verdict:
+            lines.append(verdict)
     lines.append("  A real difference still does not tell you why it exists.")
+    try:
+        note_effect(name, {"value_col": value_col, "group_col": group_col,
+                           "test": test, "p": float(p),
+                           "effect_kind": effect_kind,
+                           "effect": float(effect) if np.isfinite(effect) else None,
+                           "significant": significant,
+                           "negligible": bool(np.isfinite(effect) and
+                                              abs(effect) < (0.2 if effect_kind == "d" else 0.01))})
+    except Exception:  # noqa: BLE001
+        pass
     return "\n".join(lines)
 
 
@@ -2491,7 +2917,122 @@ def analyze_dataset(name: str, target: Optional[str] = None) -> str:
 
 # ─── swarn tool registration ───────────────────────────────────────────────────
 
+# ─── reconciliation ────────────────────────────────────────────────────────────
+#
+# Every experienced analyst does this before any meeting, and no tool in this
+# package did it: check the number against the one the business already has.
+#
+#     "My total revenue is 4.2 crore. Finance says 4.35. Why the gap?"
+#
+# You find that out BEFORE the meeting, not during it — because if your figure
+# does not match the number everyone already trusts, nothing else you say gets
+# heard, however carefully it was measured. Note that this is the one check in
+# the whole package that reaches outside the data: everything else verifies the
+# analysis against itself, which cannot catch a file that was the wrong extract
+# in the first place.
+
+# Rounding, timing and currency conversion routinely move a total by a fraction
+# of a percent. Below this the two figures are the same number.
+RECONCILE_TOLERANCE = float(os.environ.get("SWARN_RECONCILE_TOLERANCE", "0.005"))
+
+
+def reconcile(name: str, column: str, expected: float, label: str = "the expected figure",
+              how: str = "sum") -> str:
+    """Compare a figure computed here against one from outside this analysis."""
+    df, err = _get_df(name)
+    if err:
+        return err
+    if column not in df.columns:
+        return f"Error: column '{column}' not in '{name}'. Columns: {list(df.columns)}"
+    if not _is_numeric(df[column]):
+        return f"Error: '{column}' is not a number column, so it has no total to reconcile."
+    try:
+        expected = float(expected)
+    except (TypeError, ValueError):
+        return f"Error: expected must be a number — got {expected!r}."
+
+    series = pd.to_numeric(df[column], errors="coerce")
+    if how not in ("sum", "mean", "count", "min", "max", "nunique"):
+        return "Error: how must be one of sum, mean, count, min, max, nunique."
+    actual = float(getattr(series.dropna(), how)())
+    gap = actual - expected
+    rel = gap / abs(expected) if expected else float("nan")
+
+    lines = [f"Reconciling {how} of '{column}' in '{name}' against {label}:",
+             f"  this analysis : {actual:,.2f}",
+             f"  {label:<14}: {expected:,.2f}",
+             f"  difference    : {gap:+,.2f}"
+             + (f" ({rel:+.2%})" if np.isfinite(rel) else "")]
+
+    matches = np.isfinite(rel) and abs(rel) <= RECONCILE_TOLERANCE
+    if matches:
+        lines.append(f"  ✓ MATCHES within {RECONCILE_TOLERANCE:.1%}. This figure can be quoted "
+                     f"as consistent with {label}.")
+    else:
+        lines.append(f"  ✗ DOES NOT MATCH. Do not present this number until the gap is "
+                     f"explained — a figure that disagrees with {label} will be disbelieved, "
+                     f"and it is usually right to disbelieve it.")
+        # The causes, in the order they actually turn out to be true.
+        causes = []
+        cut = _EVIDENCE.get("truncation", {}).get(name)
+        if cut:
+            causes.append(f"only {cut['rows_read']:,} of {cut['rows_total']:,} rows were read "
+                          f"— this alone would make the figure too low")
+        for join in _EVIDENCE.get("joins", []):
+            if join.get("output") == name and join.get("dropped_rows"):
+                causes.append(f"a join dropped {join['dropped_rows']:,} row(s), which removes "
+                              f"their contribution")
+            if join.get("output") == name and join.get("right_duplicate_keys"):
+                causes.append("a join duplicated rows, which inflates any total over them")
+        grain = _EVIDENCE.get("grain", {}).get(name)
+        if grain and grain.get("extra_rows"):
+            causes.append(f"{grain['extra_rows']:,} row(s) duplicate a "
+                          f"{'/'.join(grain['keys'])}, so they are counted twice")
+        blank = int(df[column].isnull().sum())
+        if blank:
+            causes.append(f"{blank:,} row(s) have no '{column}' and contribute nothing")
+        if gap < 0:
+            causes.append("rows may be filtered out that the other figure includes "
+                          "(cancelled orders, a different date range, a region left out)")
+        else:
+            causes.append("rows may be included that the other figure excludes "
+                          "(test orders, internal transfers, refunds counted as sales)")
+        lines.append("  Where the difference usually comes from, most likely first:")
+        lines += [f"    {i}. {c}" for i, c in enumerate(causes[:5], 1)]
+
+    try:
+        note_reconciliation({"dataset": name, "column": column, "how": how,
+                             "actual": actual, "expected": expected, "label": str(label),
+                             "gap": gap, "relative": float(rel) if np.isfinite(rel) else None,
+                             "matches": bool(matches)})
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(lines)
+
+
 _SWARN_TOOLS = {
+    "reconcile": (
+        "Check a figure computed here against a number the business already has — the total "
+        "revenue finance reports, a row count from the source system, last month's published "
+        "figure. Do this BEFORE presenting any headline number. A figure that disagrees with "
+        "the one everybody already trusts will be disbelieved whatever the analysis behind it, "
+        "and it is usually right to disbelieve it. This is the only check that reaches outside "
+        "the data: every other tool here verifies the analysis against itself, which cannot "
+        "catch having been given the wrong extract. "
+        "When the numbers disagree it lists the likely causes in order, using what it already "
+        "knows about this dataset — a capped read, a join that dropped or duplicated rows, "
+        "duplicate keys, blank values.",
+        {"type": "object",
+         "properties": {
+             "name": {"type": "string", "description": "Name of a loaded dataset."},
+             "column": {"type": "string", "description": "The number column to total, e.g. 'revenue'."},
+             "expected": {"type": "number", "description": "The figure from outside this analysis to check against."},
+             "label": {"type": "string", "description": "Where that figure came from, e.g. 'the finance report' — quoted back in the output."},
+             "how": {"type": "string", "description": "sum (default), mean, count, min, max, or nunique."},
+         },
+         "required": ["name", "column", "expected"]},
+        reconcile,
+    ),
     "analyze_dataset": (
         "START HERE for any 'analyse/explore/what's in this data' request. One-call overview "
         "of a loaded dataset: column roles, what stands out (blanks, duplicates, extreme values, "

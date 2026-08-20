@@ -1723,7 +1723,199 @@ def _swarn_ask_human(question: str, options: Optional[list] = None) -> str:
     return ask_human(question, options=options)
 
 
+# ─── grain: what is one row of this table? ────────────────────────────────────
+#
+# The deduplicate op above finds rows that are identical in EVERY column. That
+# is not what a duplicate looks like in practice. The real one is:
+#
+#     order 4471, 2026-02-03, 5,000
+#     order 4471, 2026-02-04, 5,200
+#
+# Same order, billed twice, corrected once, never reconciled — identical in the
+# column that identifies it and different everywhere else, so drop_duplicates
+# leaves both and the revenue total counts it twice. Nothing downstream can
+# recover from that, because by then there is no evidence anything is wrong.
+#
+# Checking it requires knowing what one row is MEANT to be — the table's grain.
+# That is a question about meaning rather than about data, which is why it gets
+# asked rather than inferred, and why the answer is worth stating in the report.
+
+# A column whose values are this close to all-distinct is a plausible identifier
+# — high enough that a category like 'region' never qualifies, low enough that
+# an id column with real duplicates in it still gets caught.
+GRAIN_CANDIDATE_UNIQUENESS = float(os.environ.get("SWARN_GRAIN_CANDIDATE", "0.9"))
+
+_ID_SUFFIXES = ("_id", "id", "_key", "key", "_no", "_num", "_code", "code", "_ref", "ref")
+
+
+def _grain_candidates(df) -> list:
+    """Columns that look like they were meant to identify a row."""
+    found = []
+    for column in df.columns:
+        name = str(column).lower()
+        series = df[column]
+        non_null = int(series.notna().sum())
+        if not non_null:
+            continue
+        uniqueness = series.nunique(dropna=True) / non_null
+        named_like_a_key = name.endswith(_ID_SUFFIXES)
+        if named_like_a_key or uniqueness >= GRAIN_CANDIDATE_UNIQUENESS:
+            found.append((str(column), uniqueness, named_like_a_key))
+    # Named-like-a-key first, then by how close to unique they are — the most
+    # likely intended identifier should be the first thing read.
+    found.sort(key=lambda t: (not t[2], -t[1]))
+    return found
+
+
+def check_grain(name: str, keys=None, output_name: Optional[str] = None) -> str:
+    """Is this table one row per <keys>? Report what breaks the rule."""
+    from agent.ml.data_pipeline import get_data_pipeline
+    pipe = get_data_pipeline()
+    df = pipe.datasets.get(name)
+    if df is None:
+        known = ", ".join(pipe.datasets) or "(none loaded)"
+        return f"Error: no dataset named '{name}' is loaded. Loaded: {known}"
+    if not len(df):
+        return f"Error: '{name}' has no rows."
+
+    if keys is None:
+        lines = [f"Which column(s) identify one row of '{name}'? Nothing was passed, so "
+                 f"here is what the data suggests — re-run with keys=[...] to check one.",
+                 f"  {len(df):,} rows, {int(df.duplicated().sum()):,} of them identical in "
+                 f"every column.", ""]
+        candidates = _grain_candidates(df)
+        if not candidates:
+            lines.append("  No column looks like an identifier. If this table is one row per "
+                         "event rather than per entity, that is expected.")
+            return "\n".join(lines)
+        for column, uniqueness, _named in candidates[:8]:
+            dupes = int(df[column].notna().sum() - df[column].nunique(dropna=True))
+            verdict = ("unique — a valid grain" if not dupes
+                       else f"NOT unique — {dupes:,} repeat(s)")
+            lines.append(f"  {column}: {uniqueness:.1%} distinct — {verdict}")
+        broken = [c for c, _u, _n in candidates
+                  if int(df[c].notna().sum() - df[c].nunique(dropna=True))]
+        if broken:
+            lines.append("")
+            lines.append(f"  {broken[0]!r} looks like an identifier but repeats. If it is "
+                         f"meant to be one row per {broken[0]}, run "
+                         f"check_grain('{name}', keys=['{broken[0]}']) to see what is "
+                         f"duplicated — a repeated id is how a total gets counted twice.")
+        return "\n".join(lines)
+
+    keys = [keys] if isinstance(keys, str) else [str(k) for k in keys]
+    missing = [k for k in keys if k not in df.columns]
+    if missing:
+        return (f"Error: {missing} not in '{name}'. Columns: {list(map(str, df.columns))}")
+
+    null_keys = int(df[keys].isnull().any(axis=1).sum())
+    duplicated = df.duplicated(subset=keys, keep=False)
+    offenders = int(duplicated.sum())
+    if not offenders:
+        # A PASS is recorded too, not just a failure. "Verified one row per
+        # order" is the sentence that makes a total quotable, and a report that
+        # only ever mentions grain when it is broken cannot say it.
+        try:
+            from agent.data_analysis import note_grain
+            note_grain(name, {"keys": keys, "duplicate_keys": 0, "extra_rows": 0,
+                              "rows": int(len(df)), "conflicting_columns": []})
+        except Exception:  # noqa: BLE001
+            pass
+        note = (f"  {null_keys:,} row(s) have a blank key, so they are not covered by this "
+                f"check.\n" if null_keys else "")
+        return (f"'{name}' IS one row per {keys} — {len(df):,} rows, {len(df):,} distinct "
+                f"key(s).\n{note}"
+                f"  Totals over this table count each {'/'.join(keys)} exactly once.")
+
+    groups = df[duplicated].groupby(keys, dropna=False)
+    n_groups = groups.ngroups
+    extra = offenders - n_groups
+
+    lines = [
+        f"'{name}' is NOT one row per {keys}.",
+        f"  {n_groups:,} key(s) appear more than once, across {offenders:,} rows — "
+        f"{extra:,} row(s) more than there should be.",
+    ]
+    if null_keys:
+        lines.append(f"  {null_keys:,} row(s) have a blank key and are not covered by this check.")
+
+    # Which other columns disagree within a duplicated key decides what kind of
+    # defect this is, and the two kinds need opposite fixes.
+    varying, constant = [], []
+    for column in df.columns:
+        if column in keys:
+            continue
+        try:
+            spread = groups[column].nunique(dropna=False).max()
+        except Exception:  # noqa: BLE001
+            continue
+        (varying if spread and spread > 1 else constant).append(str(column))
+
+    if varying:
+        lines.append(f"  Within a repeated key these DISAGREE: {varying[:8]}"
+                     + (f" (+{len(varying) - 8} more)" if len(varying) > 8 else ""))
+        lines.append("  → These are CONFLICTING RECORDS, not copies. drop_duplicates will not "
+                     "touch them because the rows are not identical, and picking one at random "
+                     "silently chooses an answer. Decide which is authoritative — latest by "
+                     "timestamp, highest version, the corrected one — and keep that.")
+    else:
+        lines.append("  Every other column agrees within each repeated key.")
+        lines.append("  → These are genuine copies. apply_cleaning's deduplicate op removes "
+                     "them safely.")
+
+    numeric = [c for c in df.columns
+               if c not in keys and pd.api.types.is_numeric_dtype(df[c])
+               and not str(c).lower().endswith(_ID_SUFFIXES)]
+    for column in numeric[:5]:
+        total = float(pd.to_numeric(df[column], errors="coerce").sum())
+        once = float(pd.to_numeric(df.drop_duplicates(subset=keys)[column],
+                                   errors="coerce").sum())
+        if total and abs(total - once) / abs(total) >= 0.001:
+            lines.append(f"  '{column}' totals {total:,.2f} as the table stands and "
+                         f"{once:,.2f} counting each {'/'.join(keys)} once — the difference, "
+                         f"{total - once:,.2f} ({(total - once) / total:.1%}), is duplication.")
+
+    out = output_name or f"{name}_dupe_keys"
+    pipe.datasets[out] = df[duplicated].sort_values(keys)
+    lines.append(f"  The {offenders:,} offending rows are registered as '{out}' — look at them "
+                 f"before deciding what to do.")
+    try:
+        from agent.data_analysis import note_grain
+        note_grain(name, {"keys": keys, "duplicate_keys": n_groups,
+                          "extra_rows": extra, "rows": int(len(df)),
+                          "conflicting_columns": varying[:8]})
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(lines)
+
+
+def _swarn_check_grain(name: str, keys=None, output_name: Optional[str] = None) -> str:
+    return check_grain(name, keys, output_name)
+
+
 _SWARN_TOOLS = {
+    "check_grain": (
+        "Check whether a dataset really is one row per order / per customer / per whatever it "
+        "claims — and if not, show exactly what is duplicated and what it does to the totals. "
+        "Call this after loading ANY table you intend to sum, and always before quoting a "
+        "revenue or count total. clean_dataset only finds rows identical in EVERY column, "
+        "which is not what a real duplicate looks like: the same order id billed twice for "
+        "different amounts is not an identical row, so it survives de-duplication and gets "
+        "counted twice in every total, with nothing downstream able to tell. "
+        "Call with no keys to see which columns look like identifiers and which of them "
+        "repeat; call with keys=['order_id'] to test one. It distinguishes genuine copies "
+        "(safe to drop) from conflicting records (a decision, not a cleanup), and registers "
+        "the offending rows as a dataset so you can look at them.",
+        {"type": "object",
+         "properties": {
+             "name": {"type": "string", "description": "Name of a loaded dataset."},
+             "keys": {"type": ["array", "string"], "items": {"type": "string"},
+                      "description": "Column(s) that should identify one row, e.g. ['order_id']. Omit to get suggestions."},
+             "output_name": {"type": "string", "description": "Name for the registered offending rows (default '<name>_dupe_keys')."},
+         },
+         "required": ["name"]},
+        _swarn_check_grain,
+    ),
     "clean_dataset": (
         "Run a full human-in-the-loop data-quality diagnosis on a loaded dataset. "
         "Returns a numbered CLEANING PLAN covering missing values, redundancy, structural "

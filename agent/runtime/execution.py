@@ -36,8 +36,13 @@ MAX_OUTPUT_CHARS = 50_000
 # generated script dies on `import pandas`. Installed once per container.
 # Set SWARN_SANDBOX_PACKAGES="" to skip, or point SWARN_SANDBOX_IMAGE at an
 # image that already ships them.
+# pyarrow is here for data_bridge.py, which hands registry frames to generated
+# code as Parquet — dtypes travel with the data instead of being rebuilt from a
+# sidecar. The bridge checks this list and falls back to CSV if pyarrow is not
+# on it, so removing it degrades rather than breaks.
 SANDBOX_PACKAGES = os.environ.get(
-    "SWARN_SANDBOX_PACKAGES", "pandas numpy scipy scikit-learn matplotlib openpyxl")
+    "SWARN_SANDBOX_PACKAGES",
+    "pandas numpy scipy scikit-learn matplotlib openpyxl pyarrow")
 SANDBOX_INSTALL_TIMEOUT = int(os.environ.get("SWARN_SANDBOX_INSTALL_TIMEOUT", "900"))
 
 # Once the stack is installed the container is committed to this image, so the

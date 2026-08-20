@@ -117,18 +117,63 @@ def _is_identifier(name: str) -> bool:
 
 # ── materialise ───────────────────────────────────────────────────────────────
 
+def _use_parquet() -> bool:
+    """Is Parquet readable on BOTH sides of the handover?
+
+    The host writing a format the sandbox cannot read fails at import time
+    inside generated code, which surfaces as a traceback about the user's
+    script rather than about the bridge. So the writer asks what the sandbox
+    was actually built with instead of assuming: a custom SWARN_SANDBOX_IMAGE
+    or a trimmed SWARN_SANDBOX_PACKAGES quietly puts everything back on CSV.
+    """
+    try:
+        import pyarrow  # noqa: F401
+    except ImportError:
+        return False
+    try:
+        from agent.runtime.execution import SANDBOX_PACKAGES
+    except Exception:  # noqa: BLE001
+        return False
+    return "pyarrow" in SANDBOX_PACKAGES.split()
+
+
 def _dump(df, rel_base: str) -> None:
-    """Write one frame as CSV + a dtype sidecar, both under the workspace."""
+    """Write one frame for the sandbox to pick up, Parquet first.
+
+    This used to be CSV plus a JSON sidecar listing every dtype, because CSV
+    forgets what its columns were — a datetime came back as text, a category as
+    object, and the reader had to guess its way back. Parquet stores the schema
+    with the data, so the sidecar and the guessing both disappear, and it is
+    several times faster and smaller on a frame of any size. That matters here
+    because this runs on EVERY run_python call, for every dataset the code
+    mentions.
+
+    CSV remains as a fallback: a frame holding genuinely mixed types in one
+    object column has no Arrow schema, and one awkward frame must not take the
+    call down with it.
+    """
     import pandas as pd
     index = not (isinstance(df.index, pd.RangeIndex)
                  and df.index.start == 0 and df.index.step == 1)
-    meta = {
-        "dtypes": {str(c): str(t) for c, t in df.dtypes.items()},
-        "datetime_cols": [str(c) for c, t in df.dtypes.items()
-                          if pd.api.types.is_datetime64_any_dtype(t)],
-        "index": index,
-    }
-    df.to_csv(_abs(rel_base + ".csv"), index=index)
+    for stale in (".csv", ".meta.json", ".parquet"):
+        try:
+            os.remove(_abs(rel_base + stale))
+        except OSError:
+            pass
+    try:
+        if not _use_parquet():
+            raise RuntimeError("parquet unavailable on one side of the handover")
+        df.to_parquet(_abs(rel_base + ".parquet"), index=index)
+        meta = {"format": "parquet", "index": index}
+    except Exception:  # noqa: BLE001 — mixed-type object column, or no pyarrow
+        meta = {
+            "format": "csv",
+            "dtypes": {str(c): str(t) for c, t in df.dtypes.items()},
+            "datetime_cols": [str(c) for c, t in df.dtypes.items()
+                              if pd.api.types.is_datetime64_any_dtype(t)],
+            "index": index,
+        }
+        df.to_csv(_abs(rel_base + ".csv"), index=index)
     with open(_abs(rel_base + ".meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f)
 
@@ -136,7 +181,8 @@ def _dump(df, rel_base: str) -> None:
 def _materialise(name: str, df) -> Optional[str]:
     """Serialise one frame, re-using the last files when the frame is unchanged."""
     cached = _materialised.get(name)
-    if cached is not None and cached[0] is df and os.path.exists(_abs(cached[1] + ".csv")):
+    if cached is not None and cached[0] is df and any(
+            os.path.exists(_abs(cached[1] + ext)) for ext in (".parquet", ".csv")):
         return cached[1]
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     rel_base = os.path.join(_scratch_dir(), safe)
@@ -154,6 +200,8 @@ _READER_SRC = '''
 def _swarn_read(base):
     with open(base + '.meta.json', encoding='utf-8') as f:
         meta = json.load(f)
+    if meta.get('format') == 'parquet':
+        return pd.read_parquet(base + '.parquet')
     dt_cols = [c for c in meta.get('datetime_cols') or []]
     df = pd.read_csv(base + '.csv',
                      index_col=0 if meta.get('index') else None)
@@ -227,11 +275,16 @@ def build_bootstrap(names: list) -> tuple:
         "    base = os.path.join(_SWARN_OUT, safe)",
         "    index = not (isinstance(df.index, pd.RangeIndex)",
         "                 and df.index.start == 0 and df.index.step == 1)",
-        "    meta = {'dtypes': {str(c): str(t) for c, t in df.dtypes.items()},",
-        "            'datetime_cols': [str(c) for c, t in df.dtypes.items()",
-        "                              if pd.api.types.is_datetime64_any_dtype(t)],",
-        "            'index': index}",
-        "    df.to_csv(base + '.csv', index=index)",
+        "    try:",
+        "        df.to_parquet(base + '.parquet', index=index)",
+        "        meta = {'format': 'parquet', 'index': index}",
+        "    except Exception:",
+        "        meta = {'format': 'csv',",
+        "                'dtypes': {str(c): str(t) for c, t in df.dtypes.items()},",
+        "                'datetime_cols': [str(c) for c, t in df.dtypes.items()",
+        "                                  if pd.api.types.is_datetime64_any_dtype(t)],",
+        "                'index': index}",
+        "        df.to_csv(base + '.csv', index=index)",
         "    with open(base + '.meta.json', 'w', encoding='utf-8') as f:",
         "        json.dump(meta, f)",
         "    print(f\"[published dataset {name!r}: {df.shape[0]:,} rows x {df.shape[1]} cols]\")",
@@ -251,28 +304,33 @@ def collect_published() -> list:
     out_rel = _out_dir()
     out_abs = _abs(out_rel)
     registered = []
+    # Keyed off the sidecar rather than the data file, because the data file is
+    # now .parquet or .csv depending on what the frame allowed.
     for entry in sorted(os.listdir(out_abs)):
-        if not entry.endswith(".csv"):
+        if not entry.endswith(".meta.json"):
             continue
-        stem = entry[:-4]
+        stem = entry[: -len(".meta.json")]
         base = os.path.join(out_abs, stem)
         try:
             with open(base + ".meta.json", encoding="utf-8") as f:
                 meta = json.load(f)
-            df = pd.read_csv(base + ".csv", index_col=0 if meta.get("index") else None)
-            for col in meta.get("datetime_cols") or []:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors="coerce")
-            for col, want in (meta.get("dtypes") or {}).items():
-                if col in df.columns and str(df[col].dtype) != want:
-                    try:
-                        df[col] = df[col].astype(want)
-                    except Exception:  # noqa: BLE001
-                        pass
+            if meta.get("format") == "parquet":
+                df = pd.read_parquet(base + ".parquet")
+            else:
+                df = pd.read_csv(base + ".csv", index_col=0 if meta.get("index") else None)
+                for col in meta.get("datetime_cols") or []:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], errors="coerce")
+                for col, want in (meta.get("dtypes") or {}).items():
+                    if col in df.columns and str(df[col].dtype) != want:
+                        try:
+                            df[col] = df[col].astype(want)
+                        except Exception:  # noqa: BLE001
+                            pass
         except Exception:  # noqa: BLE001 — a half-written frame is not fatal
             continue
         finally:
-            for suffix in (".csv", ".meta.json"):
+            for suffix in (".csv", ".parquet", ".meta.json"):
                 try:
                     os.remove(base + suffix)
                 except OSError:

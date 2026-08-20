@@ -372,7 +372,7 @@ def test_analyze_over_time_rejects_a_non_date_column():
 def test_compare_groups_detects_a_real_difference():
     name = _load()                                  # north is built 300 higher
     out = compare_groups(name, "revenue", "region")
-    assert "UNLIKELY to be chance" in out
+    assert "Unlikely to be chance" in out
     assert "north" in out and "south" in out
     _cleanup(name)
 
@@ -382,7 +382,18 @@ def test_compare_groups_calls_noise_noise():
     df = pd.DataFrame({"g": ["a", "b"] * 60, "v": rng.normal(100, 15, 120)})
     name = _load("an_noise", df)
     out = compare_groups(name, "v", "g")
-    assert "could easily be chance" in out
+    assert "Could easily be chance" in out
+    _cleanup(name)
+
+
+def test_compare_groups_always_answers_both_questions():
+    """Real and big are separate questions, and only reporting the first
+    licenses calling a meaningless difference an outperformance."""
+    name = _load()
+    out = compare_groups(name, "revenue", "region")
+    assert "IS IT REAL?" in out, out
+    assert "IS IT BIG?" in out, out
+    assert "Cohen's d" in out, out
     _cleanup(name)
 
 

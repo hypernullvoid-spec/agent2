@@ -123,7 +123,10 @@ def _limitations(df: pd.DataFrame, dataset: str) -> list:
                          f"figures are capped rather than actual.")
     if int(df.duplicated().sum()):
         notes.append(f"{int(df.duplicated().sum()):,} duplicate rows remain in the analysed set.")
-    return notes + _intrinsic_limitations(df, dataset)
+    return (notes + _truncation_limitations(dataset) + _grain_limitations(dataset)
+            + _join_limitations(dataset) + _effect_limitations(dataset)
+            + _reconciliation_limitations(dataset)
+            + _intrinsic_limitations(df, dataset))
 
 
 # Lorem-ipsum stems, used to spot generated filler text.
@@ -189,6 +192,139 @@ _COST_TOKENS = tuple(t.strip().lower() for t in os.environ.get(
 THIN_ROWS_PER_LEVEL = float(os.environ.get("SWARN_THIN_ROWS_PER_LEVEL", "20"))
 SEASONALITY_MIN_DAYS = int(os.environ.get("SWARN_SEASONALITY_MIN_DAYS", "400"))
 STALE_DATA_DAYS = int(os.environ.get("SWARN_STALE_DATA_DAYS", "365"))
+
+
+def _truncation_limitations(dataset: str) -> list:
+    """A partial read stated where the narrator cannot soften it.
+
+    This one is listed first among the limitations on purpose. Every other
+    caveat qualifies a figure; this one says the figures describe a different,
+    smaller dataset than the reader believes they are looking at.
+    """
+    cut = _truncation(dataset)
+    read, total = int(cut.get("rows_read") or 0), int(cut.get("rows_total") or 0)
+    if not total or read >= total:
+        return []
+    return [
+        f"**This is not the whole file.** Only {read:,} of the {total:,} rows "
+        f"({read / total:.1%}) were read; {total - read:,} were not. Every count, total and "
+        f"average in this report describes that subset alone — none of them is a figure for "
+        f"the full dataset, and the rows left out are the ones at the END of the file, so an "
+        f"ordered extract is missing its most recent period entirely."
+    ]
+
+
+def _grain_limitations(dataset: str) -> list:
+    """Rows that duplicate an identifier, stated where it cannot be edited out.
+
+    A doubled order is indistinguishable from two orders once it is in the
+    frame, so this is the last point at which anyone can know.
+    """
+    grain = _grain(dataset)
+    source = dataset
+    if not grain.get("extra_rows"):
+        # A defect found in a source table does not stop mattering because the
+        # table was then joined. The duplicate rows travel into the result and
+        # inflate its totals exactly as they did before, so a check run on the
+        # inputs has to reach a report written about the output — otherwise the
+        # finding exists, and the reader never sees it.
+        for join in _recorded_joins(dataset):
+            for parent in (join.get("left"), join.get("right")):
+                candidate = _grain(parent or "")
+                if candidate.get("extra_rows"):
+                    grain, source = candidate, parent
+                    break
+            if grain.get("extra_rows"):
+                break
+    extra = int(grain.get("extra_rows") or 0)
+    if not extra:
+        return []
+    keys = "/".join(grain.get("keys") or [])
+    rows = int(grain.get("rows") or 0)
+    inherited = (f" These came from `{source}`, which this table was built from, so they are "
+                 f"still here." if source != dataset else "")
+    plural = "those records" if extra > 1 else "that record"
+    note = (f"**Rows are duplicated.** {extra:,} row(s) repeat a `{keys}` that should appear "
+            f"once, out of {rows:,}. Every count and total in this report counts {plural} "
+            f"more than once and is overstated by that much.")
+    if grain.get("conflicting_columns"):
+        note += (f" They are not identical copies — they disagree on "
+                 f"{grain['conflicting_columns'][:4]} — so they are conflicting records, and "
+                 f"which one is correct has not been decided.")
+    return [note + inherited]
+
+
+def _effect_limitations(dataset: str) -> list:
+    """Differences that passed a significance test but are too small to matter.
+
+    This exists because 'statistically significant' reads to most people as
+    'important', and with enough rows it means neither. Left unstated, a
+    negligible gap gets written up as one group outperforming another.
+    """
+    notes = []
+    for effect in _effects(dataset):
+        if not (effect.get("significant") and effect.get("negligible")):
+            continue
+        notes.append(
+            f"**A significant difference in {effect.get('value_col')} by "
+            f"{effect.get('group_col')} is not a meaningful one.** The test rules out chance "
+            f"(p = {effect.get('p', float('nan')):.3g}), but the effect size is negligible "
+            f"({effect.get('effect_kind')} = {effect.get('effect'):+.3f}) — the groups are "
+            f"practically the same. With enough rows almost any difference becomes "
+            f"significant; nothing here supports describing one group as outperforming "
+            f"another.")
+    return notes
+
+
+def _reconciliation_limitations(dataset: str) -> list:
+    """A figure that failed to match the number the business already has."""
+    notes = []
+    for check in _reconciliations(dataset):
+        if check.get("matches"):
+            continue
+        notes.append(
+            f"**{check.get('column')} does not reconcile.** This analysis makes it "
+            f"{check.get('actual', 0):,.2f}; {check.get('label')} says "
+            f"{check.get('expected', 0):,.2f} — a difference of {check.get('gap', 0):+,.2f}. "
+            f"The gap has not been explained, so this figure should not be presented as "
+            f"authoritative.")
+    return notes
+
+
+def _join_limitations(dataset: str) -> list:
+    """What a join took away from this table, stated where the narrator cannot edit it.
+
+    Dropped rows and fanned-out rows are the two ways a join changes every
+    total in a report while leaving the output looking entirely normal. Both
+    belong here rather than in the narrative, for the same reason the cleaner's
+    markers do: the section that admits a weakness must not be written by
+    whoever is arguing the conclusion.
+    """
+    notes = []
+    for join in _recorded_joins(dataset):
+        left, right = join.get("left"), join.get("right")
+        dropped = int(join.get("dropped_rows") or 0)
+        left_rows = int(join.get("left_rows") or 0)
+        if dropped and left_rows:
+            notes.append(
+                f"**Rows lost to a join.** {dropped:,} of the {left_rows:,} rows in `{left}` "
+                f"({dropped / left_rows:.1%}) had no match in `{right}` and were removed by the "
+                f"`{join.get('how')}` join. Every count and total in this report describes only "
+                f"the rows that matched, so none of them is a figure for the whole of `{left}`.")
+        for impact in join.get("measure_impact") or []:
+            before, lost = impact.get("before") or 0.0, impact.get("lost") or 0.0
+            if before and lost and abs(lost / before) >= 0.005:
+                notes.append(
+                    f"**{impact.get('column')} is understated.** {_num(lost)} "
+                    f"({lost / before:.1%} of the pre-join total) sat in rows the join removed. "
+                    f"Any figure for {impact.get('column')} here is that much too low.")
+        if int(join.get("right_duplicate_keys") or 0):
+            notes.append(
+                f"**Rows were duplicated by a join.** `{right}` was not unique on "
+                f"{join.get('right_keys')}, so rows from `{left}` appear more than once. Sums "
+                f"and averages over `{left}`'s own measures count those rows repeatedly and are "
+                f"overstated; de-duplicate before quoting them.")
+    return notes
 
 
 def _placeholder_columns(df: pd.DataFrame, sample: int = 300) -> list:
@@ -369,15 +505,70 @@ def _provenance_lines(df: pd.DataFrame, dataset: str) -> list:
     origin = f" from `{source}`" if source else ""
     lines.append(f"- `{dataset}` as analysed: **{rows:,} rows × {cols} columns**{origin}.")
 
+    cut = _truncation(dataset)
+    if cut:
+        read, total = int(cut.get("rows_read") or 0), int(cut.get("rows_total") or 0)
+        if total and read < total:
+            lines.append(
+                f"- **Only part of the source file was read** — {read:,} of {total:,} rows "
+                f"({read / total:.1%}), by {cut.get('strategy', 'a row cap')}. The "
+                f"{total - read:,} rows not read are the last in the file, so if it is "
+                f"ordered by date this table stops partway through the period.")
+
+    recorded = _recorded_joins(dataset)
+    for join in recorded:
+        keys = ", ".join(f"`{k}`" for k in join.get("left_keys") or [])
+        rkeys = join.get("right_keys") or []
+        if rkeys and rkeys != (join.get("left_keys") or []):
+            keys += " = " + ", ".join(f"`{k}`" for k in rkeys)
+        how = str(join.get("how", "?"))
+        article = "an" if how[:1] in "aeiou" else "a"
+        lines.append(
+            f"- This table is {article} **{how} join** of `{join.get('left')}` "
+            f"({join.get('left_rows', 0):,} rows) to `{join.get('right')}` "
+            f"({join.get('right_rows', 0):,} rows) on {keys} — a "
+            f"{join.get('relationship', 'unknown')} relationship producing "
+            f"{join.get('result_rows', 0):,} rows.")
+        dropped = int(join.get("dropped_rows") or 0)
+        if dropped:
+            lines.append(
+                f"  - **{dropped:,} row(s) of `{join.get('left')}` were dropped** by this join "
+                f"because they had no match. Every total below excludes them.")
+        dupes = int(join.get("right_duplicate_keys") or 0)
+        if dupes:
+            lines.append(
+                f"  - `{join.get('right')}` held {dupes:,} duplicate key(s), so rows from "
+                f"`{join.get('left')}` were repeated. Sums over left-hand measures count those "
+                f"rows more than once.")
+        for impact in join.get("measure_impact") or []:
+            before, after = impact.get("before") or 0.0, impact.get("after") or 0.0
+            if before and abs(after - before) / max(abs(before), 1e-9) >= 0.001:
+                lines.append(
+                    f"  - `{impact.get('column')}` totalled {_num(before)} before the join and "
+                    f"{_num(after)} after ({(after - before) / before * 100:+.1f}%).")
+
+    # An unrecorded merge — hand-written pandas inside run_python — leaves no
+    # ledger entry, so the only trace is the name clash pandas suffixes. That
+    # clue exists only when the two tables shared a column name, which is why
+    # it is a fallback and not the mechanism.
     merged = [str(c) for c in df.columns
               if str(c).endswith("_x") and f"{str(c)[:-2]}_y" in df.columns]
-    if merged:
+    if merged and not recorded:
         lines.append(
             f"- This table is the result of a **join** — `{merged[0]}`/`{merged[0][:-2]}_y` are the "
             f"name clash it produced. The join keys, direction and row-count effect were NOT "
             f"recorded, so the merge cannot be reproduced or checked from this report. Rebuild it "
-            f"with a step that records them."
+            f"with join_datasets, which records them."
         )
+    for check in _reconciliations(dataset):
+        if check.get("matches"):
+            lines.append(
+                f"- `{check.get('column')}` **reconciles** with {check.get('label')}: "
+                f"{check.get('actual', 0):,.2f} against {check.get('expected', 0):,.2f}.")
+    grain = _grain(dataset)
+    if grain.get("keys") and not grain.get("extra_rows"):
+        lines.append(f"- Verified as **one row per {'/'.join(grain['keys'])}**, so totals "
+                     f"count each one exactly once.")
     for formula in _derived_formulas(df):
         lines.append(f"- {formula}")
     lines.append("")
@@ -456,6 +647,48 @@ def _measured_numbers() -> list:
                             key=lambda kv: -abs(kv[1])):
         rows.append((f"{a} ↔ {b}", f"{r:+.2f}", _strength(r)))
     return rows[:12]
+
+
+def _grain(dataset: str) -> dict:
+    try:
+        from agent.data_analysis import grain_for
+        return grain_for(dataset)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _effects(dataset: str) -> list:
+    try:
+        from agent.data_analysis import effects_for
+        return effects_for(dataset)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _reconciliations(dataset: str) -> list:
+    try:
+        from agent.data_analysis import reconciliations_for
+        return reconciliations_for(dataset)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _truncation(dataset: str) -> dict:
+    """What the loader left unread — see data_analysis.note_truncation."""
+    try:
+        from agent.data_analysis import truncation_for
+        return truncation_for(dataset)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _recorded_joins(dataset: str) -> list:
+    """Joins the ledger says produced this table — see data_analysis.note_join."""
+    try:
+        from agent.data_analysis import joins_for
+        return joins_for(dataset)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _invented_groups() -> dict:
