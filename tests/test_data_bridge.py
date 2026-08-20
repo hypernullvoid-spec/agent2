@@ -102,15 +102,33 @@ def test_only_the_referenced_dataset_is_written_to_disk():
     cleanup(); _drop("br_a", "br_b"); reset()
 
 
+def _data_file(base: str) -> str:
+    """The frame's file, whichever format the bridge chose for it.
+
+    Parquet when both sides of the handover can read it, CSV otherwise — an
+    implementation detail these tests deliberately do not pin, so that changing
+    it stays a one-line change in data_bridge rather than a test rewrite.
+    """
+    for ext in (".parquet", ".csv"):
+        if os.path.exists(_abs(base + ext)):
+            return _abs(base + ext)
+    raise AssertionError(f"no data file written for {base!r}")
+
+
+def _read_back(base: str):
+    path = _data_file(base)
+    return pd.read_parquet(path) if path.endswith(".parquet") else pd.read_csv(path)
+
+
 def test_an_unchanged_frame_is_not_serialised_twice():
     reset()
     df = _frame()
     _put("br_cache", df)
     build_bootstrap(["br_cache"]); first = _materialised["br_cache"][1]
-    mtime = os.path.getmtime(_abs(first + ".csv"))
+    mtime = os.path.getmtime(_data_file(first))
     build_bootstrap(["br_cache"])
     assert _materialised["br_cache"][1] == first
-    assert os.path.getmtime(_abs(first + ".csv")) == mtime
+    assert os.path.getmtime(_data_file(first)) == mtime
     cleanup(); _drop("br_cache"); reset()
 
 
@@ -120,8 +138,7 @@ def test_a_replaced_frame_is_re_serialised():
     build_bootstrap(["br_new"])
     _put("br_new", _frame(20))                 # a different object
     build_bootstrap(["br_new"])
-    df = pd.read_csv(_abs(_materialised["br_new"][1] + ".csv"))
-    assert len(df) == 20
+    assert len(_read_back(_materialised["br_new"][1])) == 20
     cleanup(); _drop("br_new"); reset()
 
 

@@ -1797,6 +1797,18 @@ import agent.data_analysis  # noqa: E402,F401
 agent.data_analysis.register_into_swarn()
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Joining datasets (agent/data_join.py)
+# ───────────────────────────────────────────────────────────────────────────────
+# Registers join_datasets. Placed after data_analysis so its evidence ledger
+# exists to record into. A join is the one operation that can change every
+# total in the analysis while leaving the row count looking untouched — fan-out
+# and dropped rows cancel — so this tool predicts the row-count and measure
+# effect exactly, shows a human, and waits, the same way apply_cleaning does.
+import agent.data_join  # noqa: E402,F401
+
+agent.data_join.register_into_swarn()
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Findings report (agent/data_report.py)
 # ───────────────────────────────────────────────────────────────────────────────
 # Registers write_report — Background/Key takeaways/Methodology/Appendix, carrying
