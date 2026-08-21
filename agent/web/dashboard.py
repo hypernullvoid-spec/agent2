@@ -101,7 +101,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,7 +111,7 @@ from pydantic import BaseModel
 from agent.llm import DEFAULT_MODEL  # deployed model (see agent/llm/router.py)
 from agent.memory.memory import get_session_store, StepKind
 from agent.paths import WORKSPACE_DIR, safe_filename
-from agent.web.jobs import VALID_METHODS, attach_data_note, get_job_registry
+from agent.web.jobs import VALID_METHODS, attach_data_note, get_job_registry, seed_history
 
 app = FastAPI(title="swarn dashboard (Phase 16)")
 
@@ -140,6 +140,9 @@ class RunRequest(BaseModel):
     method: str = "react"       # "react" (AgentLoop) or "aide" (solution-tree search)
     data_dir: Optional[str] = None  # absolute path from /api/upload, or any local dir
     steps: int = 10             # AIDE only: search budget (nodes to try)
+    # react only: completed session ids (oldest first) whose transcripts seed
+    # this run's context — how a follow-up continues an earlier conversation.
+    resume_session_ids: List[str] = []
 
 
 class ConnectionManager:
@@ -389,6 +392,11 @@ class JobRequest(BaseModel):
     data_dir: Optional[str] = None  # from /api/upload (required for aide)
     steps: int = 10                 # aide search budget
     model: str = ""                 # display only — calls hard-route to the deployed endpoint
+    # react only: completed session ids (oldest first) whose transcripts seed
+    # this run's context. The server keeps no thread state between jobs, so a
+    # follow-up passes EVERY session id in its conversation, not just the
+    # latest — see jobs.seed_history for why.
+    resume_session_ids: List[str] = []
 
 
 @app.post("/api/jobs")
@@ -403,9 +411,23 @@ def api_job_submit(body: JobRequest):
                                  "and pass the returned data_dir")
     if body.data_dir and not os.path.isdir(body.data_dir):
         raise HTTPException(422, f"data_dir does not exist: {body.data_dir}")
+    # Validated here, at submit time, rather than in the runner thread — a bad
+    # session id should be a 422 the frontend can show, not a failed job.
+    if body.resume_session_ids:
+        if body.method != "react":
+            raise HTTPException(422, "resume_session_ids only applies to method "
+                                     "'react' — aide and team runs don't take "
+                                     "conversation context")
+        store = get_session_store()
+        missing = [s for s in body.resume_session_ids if store.get_session(s) is None]
+        if missing:
+            raise HTTPException(422, f"resume session(s) not found: {', '.join(missing)} "
+                                     "— a session's trace exists once its run has "
+                                     "completed; check GET /api/sessions")
     job = get_job_registry().submit(task=body.task, method=body.method,
                                     data_dir=body.data_dir, steps=body.steps,
-                                    model=body.model)
+                                    model=body.model,
+                                    resume_session_ids=body.resume_session_ids)
     return job.summary()
 
 
@@ -608,11 +630,20 @@ async def api_run(body: RunRequest):
     # lives (workspace-relative — its file tools are rooted at WORKSPACE_DIR).
     task = attach_data_note(body.task, body.data_dir)
 
+    if body.resume_session_ids:
+        store = get_session_store()
+        missing = [s for s in body.resume_session_ids if store.get_session(s) is None]
+        if missing:
+            return {"error": f"resume session(s) not found: {', '.join(missing)}"}
+
     agent = AgentLoop(
         model=body.model,
         correction_policy=SelfCorrectionPolicy(),
         guardrail_policy=GuardrailPolicy(),
+        keep_history=bool(body.resume_session_ids),
     )
+    if body.resume_session_ids:
+        agent.history = seed_history(body.resume_session_ids)
     result = await loop.run_in_executor(None, agent.run, task)
     return result
 

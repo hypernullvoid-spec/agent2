@@ -42,6 +42,7 @@ MODULES = [
     "test_tier1_generality",
     "test_data_bridge",
     "test_workbook",
+    "test_web_resume",
 ]
 
 

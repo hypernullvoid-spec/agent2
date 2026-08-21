@@ -95,6 +95,7 @@ rich>=13.0.0              # terminal UI (agent/ui.py) — panels, colors, markdo
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
+python-multipart>=0.0.9   # multipart form parsing for the dashboard's POST /api/upload
 
 # ── Capability: visual document intelligence (bounding-box inspector) ─
 # swarn/capabilities/doc_intelligence.py — PDF/image -> fields WITH page

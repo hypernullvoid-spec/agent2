@@ -66,6 +66,33 @@ def attach_data_note(task: str, data_dir: Optional[str]) -> str:
     return task + f"\n\nData files for this task are in the workspace directory '{rel}': {names}"
 
 
+def seed_history(session_ids: list[str]) -> list:
+    """
+    Build a carried-over message history from completed sessions' transcripts
+    — the web equivalent of the REPL's /resume (cli._cmd_resume): the
+    transcripts enter the new run's prompt as one synthetic exchange, so a
+    follow-up like "now add tests for it" resolves against what those runs did.
+
+    Takes a LIST of ids, oldest first, because the server keeps no thread
+    state between jobs: a session's trace records only its own turns, not the
+    context it was seeded with, so resuming from the latest session alone
+    would silently drop everything before it. The frontend owns the thread —
+    it passes every session id in the conversation, in order, on each
+    follow-up.
+    """
+    from agent.memory.memory import get_session_store
+
+    store = get_session_store()
+    transcripts = "\n\n---\n\n".join(store.recall_as_text(sid) for sid in session_ids)
+    return [
+        {"role": "user",
+         "content": "Context — transcripts of earlier sessions in this "
+                    f"conversation, oldest first:\n\n{transcripts}"},
+        {"role": "assistant",
+         "content": "Understood. I have those earlier sessions in mind."},
+    ]
+
+
 @dataclass
 class Job:
     id: str
@@ -79,6 +106,9 @@ class Job:
     started: float = 0.0
     finished: float = 0.0
     cancel_requested: bool = False
+    # react only: ids of completed sessions (oldest first) whose transcripts
+    # seed this run's context — the thread the frontend is continuing.
+    resume_session_ids: list = field(default_factory=list)
     session_id: Optional[str] = None     # react/team — known shortly after start
     run_id: Optional[str] = None         # aide — known when the search returns
     result: Optional[dict] = None
@@ -96,6 +126,7 @@ class Job:
             "started": self.started or None,
             "finished": self.finished or None,
             "cancel_requested": self.cancel_requested,
+            "resume_session_ids": self.resume_session_ids,
             "session_id": self.session_id,
             "run_id": self.run_id,
             "n_events": len(self.events),
@@ -137,9 +168,11 @@ class JobRegistry:
 
     def submit(self, task: str, method: str = "react",
                data_dir: Optional[str] = None, steps: int = 10,
-               model: str = "") -> Job:
+               model: str = "",
+               resume_session_ids: Optional[list[str]] = None) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], task=task, method=method,
-                  data_dir=data_dir, steps=steps, model=model)
+                  data_dir=data_dir, steps=steps, model=model,
+                  resume_session_ids=list(resume_session_ids or []))
         with self._lock:
             self._jobs[job.id] = job
         threading.Thread(target=self._run, args=(job,), daemon=True,
@@ -205,7 +238,13 @@ class JobRegistry:
             model=job.model or DEFAULT_MODEL,
             correction_policy=SelfCorrectionPolicy(),
             guardrail_policy=GuardrailPolicy(),
+            # keep_history is what makes run() prepend agent.history to the
+            # prompt; the AgentLoop still dies with the job — continuity
+            # across jobs comes from re-seeding on the next submit.
+            keep_history=bool(job.resume_session_ids),
         )
+        if job.resume_session_ids:
+            agent.history = seed_history(job.resume_session_ids)
         return agent.run(attach_data_note(job.task, job.data_dir),
                          stop_event=job._stop, on_session=on_session)
 
