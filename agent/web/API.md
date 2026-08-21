@@ -28,7 +28,8 @@ Submit a run. Returns immediately; the run executes on a background thread.
   "method":   "react",       // "react" | "aide" | "team" (default "react")
   "data_dir": "/abs/path",   // from /api/upload; REQUIRED for "aide"
   "steps":    10,            // aide only: search budget (nodes)
-  "model":    ""             // display only — calls route to the deployed endpoint
+  "model":    "",            // display only — calls route to the deployed endpoint
+  "resume_session_ids": []   // react only: continue a conversation (see below)
 }
 ```
 
@@ -44,6 +45,7 @@ Response `200` — job summary:
   "started": null,
   "finished": null,
   "cancel_requested": false,
+  "resume_session_ids": [],        // react: the thread this job continues
   "session_id": null,              // react/team: set shortly after start
   "run_id": null,                  // aide: set when the search finishes
   "n_events": 0,
@@ -51,7 +53,8 @@ Response `200` — job summary:
 }
 ```
 
-Errors: `422` for a bad method, missing/invalid `data_dir`.
+Errors: `422` for a bad method, missing/invalid `data_dir`, an unknown
+`resume_session_ids` entry, or `resume_session_ids` with a non-react method.
 
 Method semantics:
 - `react` — the ReAct AgentLoop (full tool set). Live steps stream on the
@@ -82,6 +85,29 @@ Event shapes (all include `ts`):
   (team: `{"final_outcome": …, "report_markdown": …}`)
 - aide: `{"run_id": "…", "steps_done": 10, "best_metric": 0.93,
   "solution_path": "…", "report_path": "…"}`
+
+### Conversations (multi-turn `react` threads)
+
+Every job runs a fresh agent, so context does not carry between jobs by
+itself. To let a follow-up build on earlier runs, pass the thread's previous
+session ids in `resume_session_ids` (react only):
+
+1. `POST /api/jobs {"task": "load sales.csv and clean it"}` → when complete,
+   the job summary / `session` event carries `session_id` **S1**.
+2. Follow-up: `POST /api/jobs {"task": "now plot revenue by month",
+   "resume_session_ids": ["S1"]}` → completes with session id **S2**.
+3. Next follow-up passes the WHOLE thread, oldest first:
+   `"resume_session_ids": ["S1", "S2"]` — a session's trace records only its
+   own turns, not the context it was seeded with, so sending only the latest
+   id would drop everything before it. The frontend owns the thread state:
+   keep an ordered array of session ids per conversation and append each
+   completed job's `session_id`.
+
+The transcripts are injected as context (same mechanism as the CLI's
+`/resume`), so the agent can answer "what did we just do?" and continue prior
+work. A session id is only valid once its run has completed (`422`
+otherwise); ids may be full UUIDs or unambiguous prefixes (≥4 chars, as in
+`GET /api/sessions/{id}`).
 
 ### `POST /api/jobs/{id}/cancel`
 Cooperative: react stops before its next step; aide stops at the next
